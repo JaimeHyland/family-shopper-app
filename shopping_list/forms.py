@@ -8,36 +8,56 @@ class ProductForm(forms.ModelForm):
     class Meta:
         model = Product
         fields = [
-            'product_name', 'category', 'default_quantity',
-            'default_unit', 'default_shop', 'notes'
+            'product_name',
+            'category',
+            'default_quantity',
+            'default_unit',
+            'default_shop',
+            'notes',
         ]
-
         widgets = {
             'notes': SummernoteWidget(),
         }
 
+    def __init__(self, *args, family=None, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.family = family or getattr(self.instance, "family", None)
+        if self.family:
+            self.instance.family = self.family
+
+        self.fields["category"].queryset = Category.objects.none()
+        self.fields["default_shop"].queryset = Shop.objects.none()
+
+        if self.family:
+            self.fields["category"].queryset = Category.objects.filter(
+                family=self.family,
+            )
+            self.fields["default_shop"].queryset = Shop.objects.filter(
+                family=self.family,
+            )
+
     def clean_product_name(self):
-        product_name = self.cleaned_data.get('product_name')
-        if product_name:
-            normalized_name = product_name.lower()
+        product_name = self.cleaned_data.get("product_name")
+
+        if product_name and self.family:
+            matching_products = Product.objects.filter(
+                family=self.family,
+                product_name__iexact=product_name,
+                current=True,
+            )
+
             if self.instance.pk:
-                # Existing product: Check case-insensitively except itself
-                if Product.objects.exclude(pk=self.instance.pk).filter(
-                    product_name__iexact=normalized_name,
-                    current=True
-                ).exists():
-                    raise ValidationError(
-                        "A product with this name already exists and is marked as current."  # noqa
-                    )
-            else:
-                # New product: Check case-insensitively
-                if Product.objects.filter(
-                    product_name__iexact=normalized_name,
-                    current=True
-                ).exists():
-                    raise ValidationError(
-                        "A product with this name already exists and is marked as current."  # noqa
-                    )
+                matching_products = matching_products.exclude(
+                    pk=self.instance.pk,
+                )
+
+            if matching_products.exists():
+                raise ValidationError(
+                    "A current product with this name already exists "
+                    "for this family."
+                )
+
         return product_name
 
 
@@ -49,6 +69,33 @@ class ShopForm(forms.ModelForm):
             'notes': SummernoteWidget(),
         }
 
+    def __init__(self, *args, family=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.family = family or getattr(self.instance, "family", None)
+        if self.family:
+            self.instance.family = self.family
+
+    def clean_shop_name(self):
+        shop_name = self.cleaned_data.get("shop_name")
+
+        if shop_name and self.family:
+            matching_shops = Shop.objects.filter(
+                family=self.family,
+                shop_name__iexact=shop_name,
+                current=True,
+            )
+
+            if self.instance.pk:
+                matching_shops = matching_shops.exclude(pk=self.instance.pk)
+
+            if matching_shops.exists():
+                raise ValidationError(
+                    "A current shop with this name already exists "
+                    "for this family."
+                )
+
+        return shop_name
+
 
 class CategoryForm(forms.ModelForm):
     class Meta:
@@ -57,3 +104,32 @@ class CategoryForm(forms.ModelForm):
         widgets = {
             'notes': SummernoteWidget(),
         }
+
+    def __init__(self, *args, family=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.family = family or getattr(self.instance, "family", None)
+        if self.family:
+            self.instance.family = self.family
+
+    def clean_category_name(self):
+        category_name = self.cleaned_data.get("category_name")
+
+        if category_name and self.family:
+            matching_categories = Category.objects.filter(
+                family=self.family,
+                category_name__iexact=category_name,
+                current=True,
+            )
+
+            if self.instance.pk:
+                matching_categories = matching_categories.exclude(
+                    pk=self.instance.pk,
+                )
+
+            if matching_categories.exists():
+                raise ValidationError(
+                    "A current category with this name already exists "
+                    "for this family."
+                )
+
+        return category_name

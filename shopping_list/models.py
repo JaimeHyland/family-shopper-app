@@ -5,6 +5,44 @@ from django.utils.text import slugify
 from django.core.exceptions import ValidationError
 
 
+class Family(models.Model):
+    name = models.CharField(max_length=100)
+    date_created = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name
+
+    class Meta:
+        verbose_name_plural = "families"
+
+
+class FamilyMembership(models.Model):
+
+    class Role(models.TextChoices):
+        ADMIN = "admin", "Family admin"
+        MEMBER = "member", "Family member"
+
+    family = models.ForeignKey(
+        Family,
+        on_delete=models.CASCADE,
+        related_name="memberships",
+    )
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="family_membership",
+    )
+    role = models.CharField(
+        max_length=10,
+        choices=Role.choices,
+        default=Role.MEMBER,
+    )
+    date_joined = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.user} \u2014 {self.family} ({self.get_role_display()})"
+
+
 class Shop(models.Model):
 
     TYPES_OF_SHOP = (
@@ -20,23 +58,58 @@ class Shop(models.Model):
     )
 
     shop_name = models.CharField(max_length=50, null=False, blank=False)
-    slug = models.SlugField(max_length=250, unique=True, null=True, blank=True)
+    slug = models.SlugField(max_length=250, null=True, blank=True)
     creator = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         null=True,
         related_name="user_who_created_shop"
     )
     date_created = models.DateTimeField(auto_now=True)
+    family = models.ForeignKey(
+        Family,
+        on_delete=models.CASCADE,
+        related_name="shops",
+    )
     notes = models.TextField(null=True, blank=True)
     type_of_shop = models.IntegerField(choices=TYPES_OF_SHOP)
     current = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['family', 'slug'], name='unique_shop_slug_per_family',
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+
+        if self.family_id and self.shop_name:
+            matching_shops = Shop.objects.filter(
+                family_id=self.family_id,
+                shop_name__iexact=self.shop_name,
+                current=True,
+            )
+
+            if self.pk:
+                matching_shops = matching_shops.exclude(pk=self.pk)
+
+            if matching_shops.exists():
+                raise ValidationError({
+                    "shop_name": (
+                        "A current shop with this name already exists "
+                        "for this family."
+                    ),
+                })
 
     def save(self, *args, **kwargs):
         if not self.slug:
             base_slug = slugify(self.shop_name)
             slug = base_slug
             count = 1
-            while Shop.objects.filter(slug=slug).exists():
+            while Shop.objects.filter(
+                family_id=self.family_id, slug=slug,
+            ).exists():
                 slug = f'{base_slug}-{count}'
                 count += 1
             self.slug = slug
@@ -48,7 +121,7 @@ class Shop(models.Model):
 
 class Category(models.Model):
     category_name = models.CharField(max_length=50, null=False, blank=False)
-    slug = models.SlugField(max_length=250, unique=True, null=True, blank=True)
+    slug = models.SlugField(max_length=250, null=True, blank=True)
     creator = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -56,15 +129,43 @@ class Category(models.Model):
         related_name="user_who_created_category"
         )
     date_created = models.DateTimeField(auto_now=True)
+    family = models.ForeignKey(
+        Family,
+        on_delete=models.CASCADE,
+        related_name="categories",
+    )
     notes = models.TextField(null=True, blank=True)
     current = models.BooleanField(default=True)
+
+    def clean(self):
+        super().clean()
+
+        if self.family_id and self.category_name:
+            matching_categories = Category.objects.filter(
+                family_id=self.family_id,
+                category_name__iexact=self.category_name,
+                current=True,
+            )
+
+            if self.pk:
+                matching_categories = matching_categories.exclude(pk=self.pk)
+
+            if matching_categories.exists():
+                raise ValidationError({
+                    "category_name": (
+                        "A current category with this name already exists "
+                        "for this family."
+                    ),
+                })
 
     def save(self, *args, **kwargs):
         if not self.slug:
             base_slug = slugify(self.category_name)
             slug = base_slug
             count = 1
-            while Category.objects.filter(slug=slug).exists():
+            while Category.objects.filter(
+                family_id=self.family_id, slug=slug,
+            ).exists():
                 slug = f'{base_slug}-{count}'
                 count += 1
             self.slug = slug
@@ -75,11 +176,22 @@ class Category(models.Model):
 
     class Meta:
         verbose_name_plural = "categories"
+        constraints = [
+            models.UniqueConstraint(
+                fields=['family', 'slug'],
+                name='unique_category_slug_per_family',
+            ),
+        ]
 
 
 class Product(models.Model):
     product_name = models.CharField(max_length=254, null=False, blank=False)
-    slug = models.SlugField(max_length=250, unique=True, null=True, blank=True)
+    slug = models.SlugField(max_length=250, null=True, blank=True)
+    family = models.ForeignKey(
+        Family,
+        on_delete=models.CASCADE,
+        related_name="products",
+    )
     category = models.ForeignKey(
         Category, on_delete=models.CASCADE, related_name="product_category"
     )
@@ -104,7 +216,9 @@ class Product(models.Model):
             base_slug = slugify(self.product_name)
             slug = base_slug
             count = 1
-            while Product.objects.filter(slug=slug).exists():
+            while Product.objects.filter(
+                family_id=self.family_id, slug=slug,
+            ).exists():
                 slug = f'{base_slug}-{count}'
                 count += 1
             self.slug = slug
@@ -115,7 +229,9 @@ class Product(models.Model):
                 base_slug = slugify(self.product_name)
                 slug = base_slug
                 count = 1
-                while Product.objects.filter(slug=slug).exists():
+                while Product.objects.filter(
+                    family_id=self.family_id, slug=slug,
+                ).exclude(pk=self.pk).exists():
                     slug = f'{base_slug}-{count}'
                     count += 1
                 self.slug = slug
@@ -123,35 +239,57 @@ class Product(models.Model):
         super().save(*args, **kwargs)
 
     def clean(self):
-        # Normalize product name to lowercase
-        lc_name = self.product_name.lower()
-
-        if self.pk:
-            # Existing product: Check for duplicates case-insensitively
-            if Product.objects.exclude(pk=self.pk).filter(
-                product_name__iexact=lc_name,
-                current=True
-            ).exists():
-                raise ValidationError(
-                    'A product with this name already exists.'
-                )
-        else:
-            # New product: Check for duplicates case-insensitively
-            if Product.objects.filter(
-                product_name__iexact=lc_name,
-                current=True
-            ).exists():
-                raise ValidationError(
-                    'A product with this name already exists.'
-                )
-
         super().clean()
+
+        errors = {}
+
+        if self.family_id and self.product_name:
+            matching_products = Product.objects.filter(
+                family_id=self.family_id,
+                product_name__iexact=self.product_name,
+                current=True,
+            )
+
+            if self.pk:
+                matching_products = matching_products.exclude(pk=self.pk,)
+
+            if matching_products.exists():
+                errors["product_name"] = (
+                    "A current product with this name already exists "
+                    "for this family."
+                )
+
+        if (
+            self.family_id
+            and self.category_id
+            and self.category.family_id != self.family_id
+        ):
+            errors["category"] = (
+                "The category must belong to the same family as the product."
+            )
+
+        if (
+            self.family_id
+            and self.default_shop_id
+            and self.default_shop.family_id != self.family_id
+        ):
+            errors["default_shop"] = (
+                "The default shop must belong to the same family as the product."
+            )
+
+        if errors:
+            raise ValidationError(errors)
 
     def __str__(self):
         return self.product_name
 
     class Meta:
         ordering = ['date_created']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['family', 'slug'], name='unique_product_slug_per_family',
+            ),
+        ]
 
 
 class ListItem(models.Model):
@@ -159,6 +297,11 @@ class ListItem(models.Model):
         Product, on_delete=models.CASCADE, related_name="product_of_list_item"
     )
     date_created = models.DateTimeField(auto_now=True)
+    family = models.ForeignKey(
+        Family,
+        on_delete=models.CASCADE,
+        related_name="list_items",
+    )
     creator = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -197,19 +340,64 @@ class ListItem(models.Model):
     )
     creator_notes = models.TextField(null=True, blank=True)
     shopper_notes = models.TextField(null=True, blank=True)
-    slug = models.SlugField(null=True, blank=True, unique=True)
+    slug = models.SlugField(null=True, blank=True)
     current = models.BooleanField(default=True)
 
     class Meta:
         ordering = ['date_created']
         verbose_name = "list item"
+        constraints = [
+            models.UniqueConstraint(
+                fields=['family', 'slug'],
+                name='unique_list_item_slug_per_family',
+            ),
+        ]
 
     def __str__(self):
         return f"{self.product.product_name} \u2013 {self.product.category}"
 
+    def clean(self):
+        super().clean()
+
+        errors = {}
+
+        if (
+            self.family_id
+            and self.product_id
+            and self.product.family_id != self.family_id
+        ):
+            errors["product"] = (
+                "The product must belong to the same family as the list item."
+            )
+
+        if (
+            self.family_id
+            and self.preferred_shop_id
+            and self.preferred_shop.family_id != self.family_id
+        ):
+            errors["preferred_shop"] = (
+                "The preferred shop must belong to the same family as the "
+                "list item."
+            )
+
+        if (
+            self.family_id
+            and self.shop_bought_id
+            and self.shop_bought.family_id != self.family_id
+        ):
+            errors["shop_bought"] = (
+                "The shop where the item was bought must belong to the "
+                "same family as the list item."
+            )
+
+        if errors:
+            raise ValidationError(errors)
+
     def save(self, *args, **kwargs):
         if not self.preferred_shop and self.product.default_shop:
             self.preferred_shop = self.product.default_shop
+        if not self.pk:
+            self.clean()
         super().save(*args, **kwargs)
         if not self.slug:
             self.slug = slugify(f"{self.product.slug}-{self.id}")

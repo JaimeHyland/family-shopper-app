@@ -246,11 +246,7 @@ function updateDatabase(checkbox, itemId) {
 
     updateForm(itemId, action);
     submitForm();
-
-    // Send data through WebSocket after the form is submitted
-    const bought = (action === 'buy');
-    const cancelled = (action === 'cancel');
-    sendData(itemId, bought, cancelled);
+    // The server broadcasts the saved state over the socket once the POST is handled.
 }
 
 function submitForm() {
@@ -337,16 +333,6 @@ socket.onmessage = function(event) {
 
 socket.onerror = function(error) {
     console.error('A WebSocket error has occurred: ', error);
-}
-
-function sendData(itemId, bought, cancelled) {
-    const user = "current_user"; // Replace with actual user data if available
-    socket.send(JSON.stringify({
-        'list_item_id': itemId,
-        'bought': bought,
-        'cancelled': cancelled,
-        'user': user
-    }));
 }
 
 //  Summernote for modals

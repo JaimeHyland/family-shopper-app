@@ -1,16 +1,69 @@
 
-from .models import ListItem, Product, Shop, Category
-from .forms import ProductForm, ShopForm
+from .models import (
+    Category,
+    FamilyMembership,
+    ListItem,
+    Product,
+    Shop,
+)
+from .forms import CategoryForm, ProductForm, ShopForm
 from utilities.utils import is_adult
+import logging
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.contrib.auth.decorators import login_required
-from django.http import HttpResponseBadRequest
+from django.db import transaction
+from django.http import Http404, HttpResponseBadRequest
 from django.shortcuts import render, redirect, get_object_or_404
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.contrib import messages
 from django.contrib.auth.mixins import UserPassesTestMixin
+from django.core.exceptions import PermissionDenied
+
+logger = logging.getLogger(__name__)
+
+
+def get_user_family(user):
+    membership = FamilyMembership.objects.select_related("family").filter(
+        user=user,
+    ).first()
+
+    if membership is None:
+        raise PermissionDenied("You are not assigned to a family.")
+
+    return membership.family
+
+
+class FamilyRequiredMixin:
+    def dispatch(self, request, *args, **kwargs):
+        request.family = get_user_family(request.user)
+        return super().dispatch(request, *args, **kwargs)
+
+
+def broadcast_list_item_update(item, user):
+    # Only the saved DB state and the authenticated user are ever broadcast.
+    # A channel-layer failure here must never affect the HTTP response for
+    # an already-successful save, so it is logged rather than raised.
+    channel_layer = get_channel_layer()
+    if channel_layer is None:
+        return
+
+    try:
+        async_to_sync(channel_layer.group_send)(
+            f"shopping_list_updates_{item.family_id}",
+            {
+                'type': 'list_item_update',
+                'list_item_id': item.id,
+                'bought': item.bought,
+                'cancelled': item.cancelled,
+                'user': user.get_username(),
+            }
+        )
+    except Exception:
+        logger.exception(
+            "Failed to broadcast list item update for item %s", item.id,
+        )
 
 
 def welcome_page(request):
@@ -19,84 +72,33 @@ def welcome_page(request):
     return render(request, 'logged_out_homepage.html')
 
 
-@login_required
-def shop(request, shop_name):
-    context = {"shop_name": shop_name}
-    return render(request, "shopping_list/shop.html", context)
-
-
-@login_required
-def get(self, request, *args, **kwargs):
-    try:
-        items = ListItem.objects.filter(bought=False)
-        return render(
-            request,
-            'shopping_list/shopping_list.html',
-            {'items': items}
-        )
-
-    except Exception as e:
-        print(f"Error processing GET request: {e}")
-        return HttpResponseBadRequest("Invalid request")
-
-
-@login_required
-def mark_item(request, item_id, status):
-    list_item = get_object_or_404(ListItem, id=item_id)
-    list_item.status = status
-    list_item.save()
-
-    # Send update to WebSocket group
-    channel_layer = get_channel_layer()
-    async_to_sync(channel_layer.group_send)(
-        "shopping_list_updates",
-        {
-            'type': 'list_item_update',
-            'list_item_id': list_item.id,
-            'status': status,
-            'user': request.user.username
-        }
-    )
-
-    return redirect('shopping_list')
-
-
 class AdultRequiredMixin(UserPassesTestMixin):
     def test_func(self):
         return is_adult(self.request.user)
 
 
 @method_decorator(login_required, name='dispatch')
-class ShoppingListView(View):
+class ShoppingListView(FamilyRequiredMixin, View):
     def get(self, request, *args, **kwargs):
         # Both options are 'category' by default
         filter_chosen = request.GET.get('filter_by', 'category')
         order_chosen = request.GET.get('order_by', 'category')
 
         shopping_list = ListItem.objects.filter(
+            family=request.family,
             bought=False,
             cancelled=False,
-            current=True
+            current=True,
         )
-
-        if filter_chosen == 'shop':
-            shopping_list = shopping_list.order_by('shop_bought__shop_name')
-        elif filter_chosen == 'category':
-            shopping_list = shopping_list.order_by('product__category__category_name') # noqa
 
         if order_chosen == 'shop':
             shopping_list = shopping_list.order_by('shop_bought__shop_name', 'product__category__category_name') # noqa
-        elif order_chosen == 'category':
+        else:
             shopping_list = shopping_list.order_by('product__category__category_name', 'shop_bought__shop_name') # noqa
 
-        shopping_list = ListItem.objects.filter(
-            current=True,
-            bought=False,
-            cancelled=False
-            ).order_by('id')
-
         shops = Shop.objects.filter(
-            current=True
+            family=request.family,
+            current=True,
             ).order_by('type_of_shop')
 
         return render(request, 'shopping_list/shopping_list.html', {
@@ -115,7 +117,9 @@ class ShoppingListView(View):
                     "Invalid request: Missing item_id or action"
                 )
 
-            item = get_object_or_404(ListItem, id=item_id)
+            item = get_object_or_404(
+                ListItem, id=item_id, family=request.family,
+            )
 
             if action == 'cancel':
                 item.cancelled = True
@@ -131,20 +135,26 @@ class ShoppingListView(View):
                 )
 
             item.save()
+            transaction.on_commit(
+                lambda: broadcast_list_item_update(item, request.user),
+            )
             return redirect('shopping_list')
 
+        except Http404:
+            raise
         except Exception as e:
             print(f"Error processing POST request: {e}")
             return HttpResponseBadRequest("Invalid request")
 
 
 @method_decorator(login_required, name='dispatch')
-class ListItemView(View):
+class ListItemView(FamilyRequiredMixin, View):
     def get(self, request, *args, **kwargs):
         slug = self.kwargs.get('slug')
         list_item = get_object_or_404(
             ListItem,
             slug=slug,
+            family=request.family,
             current=True,
             bought=False
         )
@@ -157,12 +167,12 @@ class ListItemView(View):
 
 
 @method_decorator(login_required, name='dispatch')
-class ProductListView(View):
+class ProductListView(FamilyRequiredMixin, View):
     def get(self, request, *args, **kwargs):
 
-        product_list = Product.objects.filter(current=True).order_by(
-            'category__category_name', 'date_created'
-        )
+        product_list = Product.objects.filter(
+            family=request.family, current=True,
+        ).order_by('category__category_name', 'date_created')
 
         grouped_products = {}
 
@@ -173,8 +183,8 @@ class ProductListView(View):
                 grouped_products[category_name] = []
             grouped_products[category_name].append(product)
         # For the AddProductModalDialog to populate the dropdowns
-        categories = Category.objects.all()
-        shops = Shop.objects.all()
+        categories = Category.objects.filter(family=request.family)
+        shops = Shop.objects.filter(family=request.family)
 
         return render(request, 'shopping_list/product_list.html', {
             'grouped_products': grouped_products,
@@ -184,9 +194,9 @@ class ProductListView(View):
 
 
 @method_decorator(login_required, name='dispatch')
-class ShopListView(View):
+class ShopListView(FamilyRequiredMixin, View):
     def get(self, request, *args, **kwargs):
-        shopList = Shop.objects.filter(current=True)
+        shopList = Shop.objects.filter(family=request.family, current=True)
         types_of_shop = Shop.TYPES_OF_SHOP
         return render(
             request,
@@ -196,9 +206,11 @@ class ShopListView(View):
 
 
 @method_decorator(login_required, name='dispatch')
-class CategoryListView(View):
+class CategoryListView(FamilyRequiredMixin, View):
     def get(self, request, *args, **kwargs):
-        categoryList = Category.objects.filter(current=True)
+        categoryList = Category.objects.filter(
+            family=request.family, current=True,
+        )
         return render(
             request,
             'shopping_list/category_list.html',
@@ -207,11 +219,13 @@ class CategoryListView(View):
 
 
 @method_decorator(login_required, name='dispatch')
-class ProductView(View):
+class ProductView(FamilyRequiredMixin, View):
     def get(self, request, *args, **kwargs):
         slug = self.kwargs.get('slug')
-        product = get_object_or_404(Product, slug=slug)
-        form = ProductForm(instance=product)
+        product = get_object_or_404(
+            Product, slug=slug, family=request.family,
+        )
+        form = ProductForm(instance=product, family=request.family)
         return render(
             request,
             'shopping_list/product.html',
@@ -220,8 +234,12 @@ class ProductView(View):
 
     def post(self, request, *args, **kwargs):
         slug = self.kwargs.get('slug')
-        product = get_object_or_404(Product, slug=slug)
-        form = ProductForm(request.POST, instance=product)
+        product = get_object_or_404(
+            Product, slug=slug, family=request.family,
+        )
+        form = ProductForm(
+            request.POST, instance=product, family=request.family,
+        )
         if form.is_valid():
             form.save()
             return redirect('product_list')
@@ -235,11 +253,11 @@ class ProductView(View):
 
 
 @method_decorator(login_required, name='dispatch')
-class ShopView(View):
+class ShopView(FamilyRequiredMixin, View):
     def get(self, request, *args, **kwargs):
         slug = self.kwargs.get('slug')
-        shop = get_object_or_404(Shop, slug=slug)
-        form = ShopForm(instance=shop)
+        shop = get_object_or_404(Shop, slug=slug, family=request.family)
+        form = ShopForm(instance=shop, family=request.family)
         return render(
             request,
             'shopping_list/shop.html',
@@ -248,8 +266,8 @@ class ShopView(View):
 
     def post(self, request, *args, **kwargs):
         slug = self.kwargs.get('slug')
-        shop = get_object_or_404(Shop, slug=slug)
-        form = ShopForm(request.POST, instance=shop)
+        shop = get_object_or_404(Shop, slug=slug, family=request.family)
+        form = ShopForm(request.POST, instance=shop, family=request.family)
         if form.is_valid():
             form.save()
             return redirect('shop_list')
@@ -264,10 +282,12 @@ class ShopView(View):
 
 
 @method_decorator(login_required, name='dispatch')
-class CategoryView(View):
+class CategoryView(FamilyRequiredMixin, View):
     def get(self, request, *args, **kwargs):
         slug = self.kwargs.get('slug')
-        category = get_object_or_404(Category, slug=slug)
+        category = get_object_or_404(
+            Category, slug=slug, family=request.family,
+        )
         return render(
             request,
             'shopping_list/category.html',
@@ -276,15 +296,19 @@ class CategoryView(View):
 
 
 @method_decorator(login_required, name='dispatch')
-class AddToShoppingListView(View):
+class AddToShoppingListView(FamilyRequiredMixin, View):
     def post(self, request, *args, **kwargs):
         selected_products = request.POST.getlist('selected-products')
         creator = request.user
 
-        for product_id in selected_products:
-            product = Product.objects.get(id=product_id)
+        products = Product.objects.filter(
+            family=request.family, id__in=selected_products,
+        )
+
+        for product in products:
             ListItem.objects.create(
                 product=product,
+                family=request.family,
                 quantity_required=1,
                 creator=creator
             )
@@ -293,49 +317,42 @@ class AddToShoppingListView(View):
 
 
 @method_decorator(login_required, name='dispatch')
-class AddProductView(View):
+class AddProductView(FamilyRequiredMixin, View):
     def post(self, request, *args, **kwargs):
-        product_name = request.POST.get('product_name')
-        category_id = request.POST.get('category')
-        default_shop_id = request.POST.get('default_shop')
-
-        category = Category.objects.get(id=category_id)
-        default_shop = Shop.objects.get(id=default_shop_id)
-
-        Product.objects.create(
-            product_name=product_name,
-            category=category,
-            default_shop=default_shop
-        )
-
+        form = ProductForm(request.POST, family=request.family)
+        if form.is_valid():
+            product = form.save(commit=False)
+            product.family = request.family
+            product.creator = request.user
+            product.save()
+        else:
+            messages.error(request, "A product with this name already exists.")
         return redirect('product_list')
 
 
 @method_decorator(login_required, name='dispatch')
-class AddShopView(View):
+class AddShopView(FamilyRequiredMixin, View):
     def post(self, request, *args, **kwargs):
-        shop_name = request.POST.get('shop_name')
-        type_of_shop = request.POST.get('type_of_shop')
-        notes = request.POST.get('notes')
-
-        Shop.objects.create(
-            shop_name=shop_name,
-            type_of_shop=type_of_shop,
-            notes=notes,
-        )
-
+        form = ShopForm(request.POST, family=request.family)
+        if form.is_valid():
+            shop = form.save(commit=False)
+            shop.family = request.family
+            shop.creator = request.user
+            shop.save()
+        else:
+            messages.error(request, "A shop with this name already exists.")
         return redirect('shop_list')
 
 
 @method_decorator(login_required, name='dispatch')
-class AddCategoryView(View):
+class AddCategoryView(FamilyRequiredMixin, View):
     def post(self, request, *args, **kwargs):
-        category_name = request.POST.get('category_name')
-        notes = request.POST.get('notes')
-
-        Category.objects.create(
-            category_name=category_name,
-            notes=notes,
-        )
-
+        form = CategoryForm(request.POST, family=request.family)
+        if form.is_valid():
+            category = form.save(commit=False)
+            category.family = request.family
+            category.creator = request.user
+            category.save()
+        else:
+            messages.error(request, "A category with this name already exists.")
         return redirect('category_list')
