@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 
 from pathlib import Path
 import os
+import sys
 
 import dj_database_url
 from dotenv import load_dotenv
@@ -21,6 +22,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Load local settings without overriding deployed environment variables.
 load_dotenv(BASE_DIR / ".env")
+
+RUNNING_TESTS = "test" in sys.argv
 
 DEBUG = os.environ.get("DEBUG", "False").strip().lower() == "true"
 
@@ -40,7 +43,6 @@ ALLOWED_HOSTS = [
 INSTALLED_APPS = [
     'channels',
     'daphne',
-    'cloudinary',
     'shopping_list',
     'django_summernote',
     'django.contrib.admin',
@@ -53,7 +55,6 @@ INSTALLED_APPS = [
     'allauth',
     'allauth.account',
     'allauth.socialaccount',
-    'cloudinary_storage',
     'crispy_forms',
 ]
 
@@ -160,9 +161,22 @@ STATIC_URL = '/static/'
 STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static')]
 # For deployed project only
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-# Explicit reference to whitenoise recommended for Daphne-based apps.
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 WHITENOISE_MIMETYPES = {'.webmanifest': 'application/manifest', }
+
+# The manifest backend requires collectstatic to have been run, so tests
+# use the plain finder-based backend instead of whitenoise's manifest one.
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": (
+            "django.contrib.staticfiles.storage.StaticFilesStorage"
+            if RUNNING_TESTS
+            else "whitenoise.storage.CompressedManifestStaticFilesStorage"
+        ),
+    },
+}
 
 # This prevents the session expiring every time the browser closes the app.
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False
@@ -175,17 +189,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # Daphne
 ASGI_APPLICATION = "family_shopping_list.asgi.application"
 
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/3.2/howto/static-files/
-
-# STATIC_URL = '/static/'
-# STATICFILES_STORAGE = 'cloudinary_storage.storage.StaticHashedCloudinaryStorage' # noqa
-
-# STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static')]
-# STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-
 MEDIA_URL = '/media/'
-DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 CRISPY_TEMPLATE_PACK = "Bootstrap5"
 

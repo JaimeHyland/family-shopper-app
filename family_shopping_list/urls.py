@@ -20,11 +20,23 @@ from shopping_list import views
 from django.contrib.auth import views as auth_views
 from django.conf import settings
 from django.conf.urls.static import static
+from django.contrib.staticfiles.storage import staticfiles_storage
+from django.views.generic.base import RedirectView
+
+
+class FaviconRedirectView(RedirectView):
+    permanent = False
+
+    def get_redirect_url(self, *args, **kwargs):
+        # Resolved per-request so it works whether or not a staticfiles
+        # manifest has been generated yet (e.g. under the test runner).
+        return staticfiles_storage.url('images/favicons/favicon.ico')
 
 
 urlpatterns = [
     path('welcome_page/', views.welcome_page, name='logged_out_homepage'),
     path('', include('shopping_list.urls')),
+    path('favicon.ico', FaviconRedirectView.as_view()),
     path("accounts/", include("allauth.urls")),
     path(
         'accounts/password_change/',
@@ -44,4 +56,8 @@ if settings.DEBUG:
     urlpatterns += static(
         settings.STATIC_URL,
         document_root=settings.STATIC_ROOT
+    )
+    urlpatterns += static(
+        settings.MEDIA_URL,
+        document_root=settings.MEDIA_ROOT
     )
