@@ -10,7 +10,7 @@
 <head>
     {% block extra_css %}{% endblock %}
     
-    <title>Hyland shopping list</title>
+    <title>Family Shopping List</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="The Django base template for the family_shopping_list_v1 project" />
     <meta name="keywords" content="shopping list, grocery management, family app, household planner, supermarkets" />
@@ -49,7 +49,7 @@
     <!-- Navigation -->
     <nav class="navbar navbar-expand-lg navbar-light bg-white">
         <div class="container-fluid">
-            <a class="navbar-brand" href="{% url 'shopping_list' %}"><span class="brand"><i
+            <a class="navbar-brand" href="{% url 'logged_out_homepage' %}"><span class="brand"><i
                         class="fa fa-shopping-basket" aria-hidden="true"></i> The Shopping List App</span></a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarText"
                 aria-controls="navbarText" aria-expanded="false" aria-label="Toggle navigation">
@@ -57,31 +57,36 @@
             </button>
             <div class="collapse navbar-collapse" id="navbarText">
                 <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-                    {% if user.is_authenticated %}
+                    {% if user.is_authenticated and request.family %}
                     <li class="nav-item">
-                        {% url 'shopping_list' as shopping_list_url %}
+                        {% url 'shopping_list' family_public_id=request.family.public_id as shopping_list_url %}
                         <a class="nav-link {% if request.path == shopping_list_url %}active{% endif %}" aria-current="page"
                             href="{{ shopping_list_url }}">Shopping list</a>
                     </li>
-                    {% endif %}
-                    {% if user.is_authenticated %}
                     <li class="nav-item">
-                        {% url 'product_list' as product_list_url %}
+                        {% url 'product_list' family_public_id=request.family.public_id as product_list_url %}
                         <a class="nav-link {% if request.path == product_list_url %}active{% endif %}"
                             aria-current="page" href="{{ product_list_url }}">Products</a>
                     </li>
                     {% endif %}
-                    {% if user|is_adult_filter %}
+                    {% if user|is_adult_filter and request.family %}
                     <li class="nav-item">
-                        {% url 'category_list' as category_list_url %}
+                        {% url 'category_list' family_public_id=request.family.public_id as category_list_url %}
                         <a class="nav-link {% if request.path == category_list_url %}active{% endif %}"
                             aria-current="page" href="{{ category_list_url }}">Categories</a>
                     </li>
                     <li class="nav-item">
-                        {% url 'shop_list' as shop_list_url %}
+                        {% url 'shop_list' family_public_id=request.family.public_id as shop_list_url %}
                         <a class="nav-link {% if request.path == shop_list_url %}active{% endif %}"
                             aria-current="page" href="{{ shop_list_url }}">Shops</a>
                     </li>
+                    {% endif %}
+                    {% if user.is_authenticated %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="{% url 'family_chooser' %}">Switch family</a>
+                    </li>
+                    {% endif %}
+                    {% if user|is_adult_filter %}
                     <li class="nav-item dropdown">
                         <a class="nav-link dropdown-toggle" href="#" id="userAccountDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
                             User account
@@ -278,8 +283,9 @@ function updateForm(itemId, action) {
 }
 
 // WebSocket setup
+{% if request.family %}
 const wsProt = window.location.protocol === "https:" ? "wss" : "ws";
-const wsUrl = `${wsProt}://${window.location.host}/ws/`;
+const wsUrl = `${wsProt}://${window.location.host}/ws/families/{{ request.family.public_id }}/shopping-list/`; // noqa
 const socket = new WebSocket(wsUrl);
 
 socket.onmessage = function(event) {
@@ -334,6 +340,7 @@ socket.onmessage = function(event) {
 socket.onerror = function(error) {
     console.error('A WebSocket error has occurred: ', error);
 }
+{% endif %}
 
 //  Summernote for modals
 $('#addProductModal').on('shown.bs.modal', function () {

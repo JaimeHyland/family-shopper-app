@@ -16,7 +16,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import include, path
-from shopping_list import views
+from shopping_list import registration_views
 from django.contrib.auth import views as auth_views
 from django.conf import settings
 from django.conf.urls.static import static
@@ -34,8 +34,27 @@ class FaviconRedirectView(RedirectView):
 
 
 urlpatterns = [
-    path('welcome_page/', views.welcome_page, name='logged_out_homepage'),
-    path('', include('shopping_list.urls')),
+    path('', registration_views.HomeView.as_view(), name='logged_out_homepage'), # noqa
+    path(
+        'families/choose/',
+        registration_views.FamilyChooserView.as_view(),
+        name='family_chooser',
+    ),
+    path(
+        'register/check-email/',
+        registration_views.registration_check_email,
+        name='registration_check_email',
+    ),
+    path(
+        'register/verify/<str:token>/',
+        registration_views.RegistrationCompletionView.as_view(),
+        name='registration_complete',
+    ),
+    path(
+        'welcome_page/',
+        RedirectView.as_view(pattern_name='logged_out_homepage', permanent=False), # noqa
+    ),
+    path('families/<uuid:family_public_id>/', include('shopping_list.urls')), # noqa
     path('favicon.ico', FaviconRedirectView.as_view()),
     path("accounts/", include("allauth.urls")),
     path(

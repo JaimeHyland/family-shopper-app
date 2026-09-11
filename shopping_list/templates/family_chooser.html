@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+    <h1>Choose a family</h1>
+    <p>You belong to more than one family. Choose which one to open.</p>
+    <ul class="list-group">
+        {% for membership in memberships %}
+        <li class="list-group-item">
+            <a href="{% url 'shopping_list' family_public_id=membership.family.public_id %}">
+                {{ membership.family.name }}
+            </a>
+            &mdash; {{ membership.display_name }} ({{ membership.get_role_display }})
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+{% endblock %}

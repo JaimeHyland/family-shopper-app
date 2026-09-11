@@ -9,7 +9,7 @@
         <h3 class="mx-3">Current shopping list</h3>
       </div>
       <div class="row">
-        <form id="shopping-list-form" method="post" action="{% url 'shopping_list' %}" class="w-100">
+        <form id="shopping-list-form" method="post" action="{% url 'shopping_list' family_public_id=request.family.public_id %}" class="w-100">
           {% csrf_token %}
           <!-- Input types are defined in javascript and parsed by ShoppingListView.post() -->
           <input type="hidden" id="item-id" name="item_id" value="">
@@ -25,7 +25,7 @@
                   {% if item.cancelled %} checked {% endif %} onchange="toggleCancelUncancel(this, '{{ item.id }}')">
                  <span class="{% if item.cancelled %}text-muted{% elif item.bought %}bought-text{% else %}bold-text{% endif %}">
                     <a id="product-name" class="custom-link product-name-style"
-                      href="{% url 'list_item' slug=item.slug %}">
+                      href="{% url 'list_item' family_public_id=request.family.public_id slug=item.slug %}">
                         {{ item.product.product_name }}
                     </a>
                   </span>
@@ -34,7 +34,7 @@
             </li>
             {% endfor %}
             <button type="submit">Refresh shopping list</button>
-              <a href="{% url 'product_list' %}" class="btn btn-primary">Add item(s) to shopping list</a>
+              <a href="{% url 'product_list' family_public_id=request.family.public_id %}" class="btn btn-primary">Add item(s) to shopping list</a>
           </ul>
         </form>
       </div>

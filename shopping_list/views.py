@@ -1,6 +1,7 @@
 
 from .models import (
     Category,
+    Family,
     FamilyMembership,
     ListItem,
     Product,
@@ -24,20 +25,31 @@ from django.core.exceptions import PermissionDenied
 logger = logging.getLogger(__name__)
 
 
-def get_user_family(user):
-    membership = FamilyMembership.objects.select_related("family").filter(
-        user=user,
-    ).first()
-
-    if membership is None:
-        raise PermissionDenied("You are not assigned to a family.")
-
-    return membership.family
+def get_user_memberships(user):
+    """All of a user's memberships, never assuming there is only one."""
+    return FamilyMembership.objects.select_related("family").filter(user=user) # noqa
 
 
-class FamilyRequiredMixin:
+class FamilyMembershipRequiredMixin:
+    """
+    Resolves the family explicitly from the `family_public_id` URL kwarg
+    and requires an authenticated membership in it. Attaches both
+    `request.family` and `request.family_membership`. Never trusts the
+    UUID merely because the client supplied it, and never reveals whether
+    a family exists to a non-member (404 either way).
+    """
+
     def dispatch(self, request, *args, **kwargs):
-        request.family = get_user_family(request.user)
+        family_public_id = kwargs.get("family_public_id")
+        family = get_object_or_404(Family, public_id=family_public_id)
+        membership = FamilyMembership.objects.select_related("family").filter( # noqa
+            family=family, user=request.user,
+        ).first()
+        if membership is None:
+            raise Http404("No such family for this user.")
+
+        request.family = family
+        request.family_membership = membership
         return super().dispatch(request, *args, **kwargs)
 
 
@@ -66,19 +78,13 @@ def broadcast_list_item_update(item, user):
         )
 
 
-def welcome_page(request):
-    if request.user.is_authenticated:
-        return redirect('shopping_list')
-    return render(request, 'logged_out_homepage.html')
-
-
 class AdultRequiredMixin(UserPassesTestMixin):
     def test_func(self):
         return is_adult(self.request.user)
 
 
 @method_decorator(login_required, name='dispatch')
-class ShoppingListView(FamilyRequiredMixin, View):
+class ShoppingListView(FamilyMembershipRequiredMixin, View):
     def get(self, request, *args, **kwargs):
         # Both options are 'category' by default
         filter_chosen = request.GET.get('filter_by', 'category')
@@ -138,7 +144,9 @@ class ShoppingListView(FamilyRequiredMixin, View):
             transaction.on_commit(
                 lambda: broadcast_list_item_update(item, request.user),
             )
-            return redirect('shopping_list')
+            return redirect(
+                'shopping_list', family_public_id=request.family.public_id,
+            )
 
         except Http404:
             raise
@@ -148,7 +156,7 @@ class ShoppingListView(FamilyRequiredMixin, View):
 
 
 @method_decorator(login_required, name='dispatch')
-class ListItemView(FamilyRequiredMixin, View):
+class ListItemView(FamilyMembershipRequiredMixin, View):
     def get(self, request, *args, **kwargs):
         slug = self.kwargs.get('slug')
         list_item = get_object_or_404(
@@ -167,7 +175,7 @@ class ListItemView(FamilyRequiredMixin, View):
 
 
 @method_decorator(login_required, name='dispatch')
-class ProductListView(FamilyRequiredMixin, View):
+class ProductListView(FamilyMembershipRequiredMixin, View):
     def get(self, request, *args, **kwargs):
 
         product_list = Product.objects.filter(
@@ -194,7 +202,7 @@ class ProductListView(FamilyRequiredMixin, View):
 
 
 @method_decorator(login_required, name='dispatch')
-class ShopListView(FamilyRequiredMixin, View):
+class ShopListView(FamilyMembershipRequiredMixin, View):
     def get(self, request, *args, **kwargs):
         shopList = Shop.objects.filter(family=request.family, current=True)
         types_of_shop = Shop.TYPES_OF_SHOP
@@ -206,7 +214,7 @@ class ShopListView(FamilyRequiredMixin, View):
 
 
 @method_decorator(login_required, name='dispatch')
-class CategoryListView(FamilyRequiredMixin, View):
+class CategoryListView(FamilyMembershipRequiredMixin, View):
     def get(self, request, *args, **kwargs):
         categoryList = Category.objects.filter(
             family=request.family, current=True,
@@ -219,7 +227,7 @@ class CategoryListView(FamilyRequiredMixin, View):
 
 
 @method_decorator(login_required, name='dispatch')
-class ProductView(FamilyRequiredMixin, View):
+class ProductView(FamilyMembershipRequiredMixin, View):
     def get(self, request, *args, **kwargs):
         slug = self.kwargs.get('slug')
         product = get_object_or_404(
@@ -237,12 +245,16 @@ class ProductView(FamilyRequiredMixin, View):
         product = get_object_or_404(
             Product, slug=slug, family=request.family,
         )
+        if not is_adult(request.user):
+            raise PermissionDenied
         form = ProductForm(
             request.POST, instance=product, family=request.family,
         )
         if form.is_valid():
             form.save()
-            return redirect('product_list')
+            return redirect(
+                'product_list', family_public_id=request.family.public_id,
+            )
         else:
             messages.error(request, "A product with this name already exists.")
         return render(
@@ -253,7 +265,7 @@ class ProductView(FamilyRequiredMixin, View):
 
 
 @method_decorator(login_required, name='dispatch')
-class ShopView(FamilyRequiredMixin, View):
+class ShopView(FamilyMembershipRequiredMixin, View):
     def get(self, request, *args, **kwargs):
         slug = self.kwargs.get('slug')
         shop = get_object_or_404(Shop, slug=slug, family=request.family)
@@ -267,10 +279,14 @@ class ShopView(FamilyRequiredMixin, View):
     def post(self, request, *args, **kwargs):
         slug = self.kwargs.get('slug')
         shop = get_object_or_404(Shop, slug=slug, family=request.family)
+        if not is_adult(request.user):
+            raise PermissionDenied
         form = ShopForm(request.POST, instance=shop, family=request.family)
         if form.is_valid():
             form.save()
-            return redirect('shop_list')
+            return redirect(
+                'shop_list', family_public_id=request.family.public_id,
+            )
         else:
             for field, errors in form.errors.items():
                 print(f"{field}: {errors}")
@@ -282,7 +298,7 @@ class ShopView(FamilyRequiredMixin, View):
 
 
 @method_decorator(login_required, name='dispatch')
-class CategoryView(FamilyRequiredMixin, View):
+class CategoryView(FamilyMembershipRequiredMixin, View):
     def get(self, request, *args, **kwargs):
         slug = self.kwargs.get('slug')
         category = get_object_or_404(
@@ -296,7 +312,7 @@ class CategoryView(FamilyRequiredMixin, View):
 
 
 @method_decorator(login_required, name='dispatch')
-class AddToShoppingListView(FamilyRequiredMixin, View):
+class AddToShoppingListView(FamilyMembershipRequiredMixin, View):
     def post(self, request, *args, **kwargs):
         selected_products = request.POST.getlist('selected-products')
         creator = request.user
@@ -313,11 +329,13 @@ class AddToShoppingListView(FamilyRequiredMixin, View):
                 creator=creator
             )
 
-        return redirect('shopping_list')
+        return redirect(
+            'shopping_list', family_public_id=request.family.public_id,
+        )
 
 
 @method_decorator(login_required, name='dispatch')
-class AddProductView(FamilyRequiredMixin, View):
+class AddProductView(FamilyMembershipRequiredMixin, AdultRequiredMixin, View):
     def post(self, request, *args, **kwargs):
         form = ProductForm(request.POST, family=request.family)
         if form.is_valid():
@@ -327,11 +345,13 @@ class AddProductView(FamilyRequiredMixin, View):
             product.save()
         else:
             messages.error(request, "A product with this name already exists.")
-        return redirect('product_list')
+        return redirect(
+            'product_list', family_public_id=request.family.public_id,
+        )
 
 
 @method_decorator(login_required, name='dispatch')
-class AddShopView(FamilyRequiredMixin, View):
+class AddShopView(FamilyMembershipRequiredMixin, AdultRequiredMixin, View):
     def post(self, request, *args, **kwargs):
         form = ShopForm(request.POST, family=request.family)
         if form.is_valid():
@@ -341,11 +361,13 @@ class AddShopView(FamilyRequiredMixin, View):
             shop.save()
         else:
             messages.error(request, "A shop with this name already exists.")
-        return redirect('shop_list')
+        return redirect(
+            'shop_list', family_public_id=request.family.public_id,
+        )
 
 
 @method_decorator(login_required, name='dispatch')
-class AddCategoryView(FamilyRequiredMixin, View):
+class AddCategoryView(FamilyMembershipRequiredMixin, View):
     def post(self, request, *args, **kwargs):
         form = CategoryForm(request.POST, family=request.family)
         if form.is_valid():
@@ -355,4 +377,6 @@ class AddCategoryView(FamilyRequiredMixin, View):
             category.save()
         else:
             messages.error(request, "A category with this name already exists.")
-        return redirect('category_list')
+        return redirect(
+            'category_list', family_public_id=request.family.public_id,
+        )

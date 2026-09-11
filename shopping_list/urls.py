@@ -3,7 +3,7 @@ from django.urls import path
 
 
 urlpatterns = [
-    path('', views.ShoppingListView.as_view(), name='shopping_list'),
+    path('shopping-list/', views.ShoppingListView.as_view(), name='shopping_list'), # noqa
     path('list-item-<slug:slug>/', views.ListItemView.as_view(), name='list_item'),  # noqa
     path('add-to-shopping-list/', views.AddToShoppingListView.as_view(), name='add_to_shopping_list'),  # noqa
     path('products/', views.ProductListView.as_view(), name='product_list'),

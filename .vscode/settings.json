@@ -15,4 +15,8 @@
    "files.autoSave": "off",
    "workbench.colorTheme": "Visual Studio Dark",
    "terminal.integrated.gpuAcceleration": "canvas",
+   "chat.tools.terminal.autoApprove": {
+      "Set-Clipboard": true,
+      ".\\.venv\\Scripts\\python.exe": true
+   },
 }

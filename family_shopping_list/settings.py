@@ -62,7 +62,9 @@ LOGIN_URL = 'logged_out_homepage'
 
 # Required by django-allauth
 SITE_ID = 1
-LOGIN_REDIRECT_URL = 'shopping_list'
+# 'shopping_list' now requires a family_public_id, so post-login routing
+# goes through the homepage's membership-count-aware redirect instead.
+LOGIN_REDIRECT_URL = 'logged_out_homepage'
 LOGOUT_REDIRECT_URL = 'logged_out_homepage'
 
 MIDDLEWARE = [
@@ -138,8 +140,30 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-# Required by django-allauth: no verification of account by e-mail required
+# Required by django-allauth: no verification of account by e-mail required.
+# (Family-admin public self-registration uses its own dedicated,
+# verified-email flow instead; ordinary/managed members are unaffected and
+# may still have no email address at all.)
 ACCOUNT_EMAIL_VERIFICATION = 'none'
+# Keeps username/password login working as-is; login is not made ambiguous
+# or email-based. New Family admins log in the same way, via username.
+ACCOUNT_ADAPTER = 'shopping_list.adapters.NoPublicSignupAccountAdapter'
+
+# Email
+# https://docs.djangoproject.com/en/5.1/topics/email/
+EMAIL_BACKEND = os.environ.get(
+    "EMAIL_BACKEND",
+    "django.core.mail.backends.console.EmailBackend" if DEBUG
+    else "django.core.mail.backends.smtp.EmailBackend",
+)
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "True").strip().lower() == "true" # noqa
+DEFAULT_FROM_EMAIL = os.environ.get(
+    "DEFAULT_FROM_EMAIL", "webmaster@localhost",
+)
 
 
 # Internationalization

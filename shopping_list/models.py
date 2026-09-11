@@ -1,12 +1,19 @@
 from django.db import models
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.db.models.functions import Lower
 from django.utils.text import slugify
 from django.core.exceptions import ValidationError
+import uuid
 
 
 class Family(models.Model):
     name = models.CharField(max_length=100)
+    public_id = models.UUIDField(
+        default=uuid.uuid4,
+        unique=True,
+        editable=False,
+    )
     date_created = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -27,11 +34,14 @@ class FamilyMembership(models.Model):
         on_delete=models.CASCADE,
         related_name="memberships",
     )
-    user = models.OneToOneField(
+    user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="family_membership",
+        related_name="family_memberships",
     )
+    # The name shown for this user within this family; may differ per
+    # family (e.g. "Hannah" in one family, "Han" in another).
+    display_name = models.CharField(max_length=100)
     role = models.CharField(
         max_length=10,
         choices=Role.choices,
@@ -39,8 +49,93 @@ class FamilyMembership(models.Model):
     )
     date_joined = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["family", "user"],
+                name="unique_family_user_membership",
+            ),
+            models.UniqueConstraint(
+                Lower("display_name"), "family",
+                name="unique_display_name_per_family_ci",
+            ),
+        ]
+
+    @property
+    def is_family_admin(self):
+        # Not to be confused with Django's is_staff/is_superuser.
+        return self.role == self.Role.ADMIN
+
+    def clean(self):
+        super().clean()
+
+        if self.display_name:
+            self.display_name = self.display_name.strip()
+
+        if not self.display_name:
+            raise ValidationError({
+                "display_name": "The display name cannot be blank.",
+            })
+
+        if self.family_id:
+            matching = FamilyMembership.objects.filter(
+                family_id=self.family_id,
+                display_name__iexact=self.display_name,
+            )
+            if self.pk:
+                matching = matching.exclude(pk=self.pk)
+            if matching.exists():
+                raise ValidationError({
+                    "display_name": (
+                        "That display name is already used by someone "
+                        "else in this family."
+                    ),
+                })
+
     def __str__(self):
-        return f"{self.user} \u2014 {self.family} ({self.get_role_display()})"
+        return (
+            f"{self.display_name} \u2014 {self.family} "
+            f"({self.get_role_display()})"
+        )
+
+
+class AutomaticAdultGroupMembership(models.Model):
+    """Tracks adult-group membership granted by an application rule."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="automatic_adult_group_membership",
+    )
+
+
+class PendingFamilyAdminRegistration(models.Model):
+    """
+    A not-yet-completed public self-registration request for a new Family
+    admin. No User/Family/FamilyMembership exist until the emailed link is
+    opened and the completion form is submitted successfully.
+    """
+    email = models.EmailField()
+    family_name = models.CharField(max_length=100)
+    token_digest = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["email"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["email"],
+                condition=models.Q(consumed_at__isnull=True),
+                name="unique_active_pending_registration_per_email",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Pending registration for {self.email}"
 
 
 class Shop(models.Model):
