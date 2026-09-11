@@ -13,6 +13,14 @@ Treat cost control as a high priority in every task and future session in this p
 - Before re-running a test (or suite), check whether anything relevant has
   changed since it last ran. If nothing relevant changed, reuse the prior
   result instead of re-running it.
+- Always copy investigation reports to the Windows clipboard in plain text
+  automatically once produced, without waiting to be asked. Use a single
+  PowerShell `Set-Clipboard` call with a literal here-string (`@'...'@`),
+  not an expandable one (`@"..."@`), so `$` and backtick characters in the
+  report (e.g. code snippets) are not corrupted by interpolation. This
+  should be a one-step operation; do not add multi-step verification
+  beyond a simple length/spot-check when the content has no special
+  characters.
 - Avoid frequent polling. Use sensible wait intervals and concise updates.
 - Do not delegate to additional agents unless explicitly requested.
 - Before expanding a task into substantial extra investigation or expensive
