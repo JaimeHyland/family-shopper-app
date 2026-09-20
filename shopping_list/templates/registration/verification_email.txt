@@ -1,0 +1,9 @@
+Hello,
+
+Someone requested registration of a family called "{{ family_name }}" on the Family Shopping List app using this email address.
+
+To finish setting up your admin account, open this link:
+
+{{ completion_url }}
+
+This link will expire soon and can only be used once. If you didn't request this, you can safely ignore this email.

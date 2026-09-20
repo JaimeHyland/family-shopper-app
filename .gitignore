@@ -34,6 +34,7 @@ Thumbs.db
 
 # Maintenance script outputs
 family-shopping-list-safe.zip
+diff_for_review.txt
 
 # Core dumps / platform artifacts
 core.Microsoft*

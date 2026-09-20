@@ -17,7 +17,7 @@
         <h3 class="mx-3">Products</h3>
       </div>
       <div class="row">
-        <form id="product-list-form" method="post" action="{% url 'add_to_shopping_list' %}" class="w-100">
+        <form id="product-list-form" method="post" action="{% url 'add_to_shopping_list' family_public_id=request.family.public_id %}" class="w-100">
           {% csrf_token %}
           {% for category, product_list in grouped_products.items %}
             <!-- Category heading -->
@@ -28,7 +28,7 @@
                 <div class="d-flex align-items-center">
                   <span>
                     <a class="link-success link-opacity-30-hover link-underline-opacity-10 mx-3" 
-                      href="{% url 'product_detail' slug=product.slug %}">{{ product.product_name }}</a>
+                      href="{% url 'product_detail' family_public_id=request.family.public_id slug=product.slug %}">{{ product.product_name }}</a>
                   </span>
                 </div>
                 <div>
@@ -55,7 +55,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
-        <form id="add-product-form" method="post" action="{% url 'add_product' %}">
+        <form id="add-product-form" method="post" action="{% url 'add_product' family_public_id=request.family.public_id %}">
           {% csrf_token %}
           <div class="mb-3">
             <label for="product_name" class="form-label">Product name</label>

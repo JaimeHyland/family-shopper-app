@@ -1,11 +1,46 @@
 from django.contrib import admin
-from .models import ListItem, Shop, Category, Product
+from .models import (
+    Category,
+    Family,
+    FamilyMembership,
+    ListItem,
+    PendingFamilyAdminRegistration,
+    Product,
+    Shop,
+)
+
+
+class FamilyAdmin(admin.ModelAdmin):
+    list_display = ('name', 'public_id', 'date_created')
+    readonly_fields = ('public_id', 'date_created')
+    search_fields = ('name',)
+
+
+class FamilyMembershipAdmin(admin.ModelAdmin):
+    list_display = ('display_name', 'user', 'family', 'role', 'date_joined')
+    list_filter = ('role', 'family')
+    search_fields = ('display_name', 'user__username', 'family__name')
+    readonly_fields = ('date_joined',)
+
+
+class PendingFamilyAdminRegistrationAdmin(admin.ModelAdmin):
+    # token_digest is a one-way hash, never the raw token, but it still
+    # should never be hand-edited via the admin.
+    list_display = (
+        'email', 'family_name', 'created_at', 'expires_at', 'consumed_at',
+    )
+    list_filter = ('consumed_at',)
+    search_fields = ('email', 'family_name')
+    readonly_fields = (
+        'email', 'family_name', 'token_digest', 'created_at', 'expires_at',
+        'consumed_at',
+    )
 
 
 class ListItemAdmin(admin.ModelAdmin):
     # Display fields on admin/.../change page
     fields = (
-        'product', 'category', 'preferred_shop', 'bought', 'buyer',
+        'product', 'category', 'preferred_shop', 'in_basket', 'buyer',
         'shop_bought', 'creator_notes', 'shopper_notes', 'cancelled',
         'cancelled_by', 'date_cancelled', 'quantity_required',
         'quantity_bought', 'current',
@@ -27,7 +62,7 @@ class ListItemAdmin(admin.ModelAdmin):
 
     # Group ListItems by Product category and allow filtering
     list_display = (
-        'product', 'category', 'preferred_shop', 'bought', 'cancelled'
+        'product', 'category', 'preferred_shop', 'in_basket', 'cancelled'
     )
 
     # Enable filtering by category (from Product model)
@@ -81,3 +116,8 @@ admin.site.register(ListItem, ListItemAdmin)
 admin.site.register(Product, ProductAdmin)
 admin.site.register(Category, CategoryAdmin)
 admin.site.register(Shop, ShopAdmin)
+admin.site.register(Family, FamilyAdmin)
+admin.site.register(FamilyMembership, FamilyMembershipAdmin)
+admin.site.register(
+    PendingFamilyAdminRegistration, PendingFamilyAdminRegistrationAdmin,
+)

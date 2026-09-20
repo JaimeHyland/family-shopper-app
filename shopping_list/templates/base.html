@@ -10,7 +10,7 @@
 <head>
     {% block extra_css %}{% endblock %}
     
-    <title>Hyland shopping list</title>
+    <title>Family Shopping List</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="The Django base template for the family_shopping_list_v1 project" />
     <meta name="keywords" content="shopping list, grocery management, family app, household planner, supermarkets" />
@@ -49,7 +49,7 @@
     <!-- Navigation -->
     <nav class="navbar navbar-expand-lg navbar-light bg-white">
         <div class="container-fluid">
-            <a class="navbar-brand" href="{% url 'shopping_list' %}"><span class="brand"><i
+            <a class="navbar-brand" href="{% url 'logged_out_homepage' %}"><span class="brand"><i
                         class="fa fa-shopping-basket" aria-hidden="true"></i> The Shopping List App</span></a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarText"
                 aria-controls="navbarText" aria-expanded="false" aria-label="Toggle navigation">
@@ -57,31 +57,36 @@
             </button>
             <div class="collapse navbar-collapse" id="navbarText">
                 <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-                    {% if user.is_authenticated %}
+                    {% if user.is_authenticated and request.family %}
                     <li class="nav-item">
-                        {% url 'shopping_list' as shopping_list_url %}
+                        {% url 'shopping_list' family_public_id=request.family.public_id as shopping_list_url %}
                         <a class="nav-link {% if request.path == shopping_list_url %}active{% endif %}" aria-current="page"
                             href="{{ shopping_list_url }}">Shopping list</a>
                     </li>
-                    {% endif %}
-                    {% if user.is_authenticated %}
                     <li class="nav-item">
-                        {% url 'product_list' as product_list_url %}
+                        {% url 'product_list' family_public_id=request.family.public_id as product_list_url %}
                         <a class="nav-link {% if request.path == product_list_url %}active{% endif %}"
                             aria-current="page" href="{{ product_list_url }}">Products</a>
                     </li>
                     {% endif %}
-                    {% if user|is_adult_filter %}
+                    {% if user|is_adult_filter and request.family %}
                     <li class="nav-item">
-                        {% url 'category_list' as category_list_url %}
+                        {% url 'category_list' family_public_id=request.family.public_id as category_list_url %}
                         <a class="nav-link {% if request.path == category_list_url %}active{% endif %}"
                             aria-current="page" href="{{ category_list_url }}">Categories</a>
                     </li>
                     <li class="nav-item">
-                        {% url 'shop_list' as shop_list_url %}
+                        {% url 'shop_list' family_public_id=request.family.public_id as shop_list_url %}
                         <a class="nav-link {% if request.path == shop_list_url %}active{% endif %}"
                             aria-current="page" href="{{ shop_list_url }}">Shops</a>
                     </li>
+                    {% endif %}
+                    {% if user.is_authenticated %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="{% url 'family_chooser' %}">Switch family</a>
+                    </li>
+                    {% endif %}
+                    {% if user|is_adult_filter %}
                     <li class="nav-item dropdown">
                         <a class="nav-link dropdown-toggle" href="#" id="userAccountDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
                             User account
@@ -125,6 +130,24 @@
         {% endblock content %}
 
     </main>
+
+    {% if request.family %}
+    <!-- Notifies other family members when someone buys the items in their basket -->
+    <div class="modal fade" id="basketBoughtModal" tabindex="-1" aria-hidden="true" aria-labelledby="basketBoughtModalLabel">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="basketBoughtModalLabel">Items bought</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body" id="basketBoughtModalBody"></div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-primary" data-bs-dismiss="modal">OK</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
 
     <!-- Footer -->
     <footer class="footer mt-auto py-3 dark-bg">
@@ -194,7 +217,7 @@
 
 <script>
 // Change presentation of list items when user turns cancelled or 
-// bought checkboxes to True.
+// in-basket checkboxes to True.
 
 function getCSRFToken() {
     let name = 'csrftoken';
@@ -218,7 +241,7 @@ function toggleCancelUncancel(checkbox, itemId) {
     
     if (checkbox.checked == true) {
         if (confirm(
-            "Are you sure you don't want this item bought this time after all?"
+            "Are you sure you don't want this item in your basket this time after all?"
         )) {
             checkbox.checked == true
             updateDatabase(checkbox, itemId);
@@ -241,16 +264,12 @@ function updateDatabase(checkbox, itemId) {
     if (checkbox.name === 'cancelled_item') {
         action = checkbox.checked ? 'cancel' : 'uncancel';
     } else {
-        action = checkbox.checked ? 'buy' : 'unbuy';
+        action = checkbox.checked ? 'add_to_basket' : 'remove_from_basket';
     }
 
     updateForm(itemId, action);
     submitForm();
-
-    // Send data through WebSocket after the form is submitted
-    const bought = (action === 'buy');
-    const cancelled = (action === 'cancel');
-    sendData(itemId, bought, cancelled);
+    // The server broadcasts the saved state over the socket once the POST is handled.
 }
 
 function submitForm() {
@@ -281,22 +300,88 @@ function updateForm(itemId, action) {
     document.getElementById('action-type').value = action;
 }
 
+function buyMyBasket() {
+    updateForm('', 'buy_basket');
+    submitForm();
+    // The server broadcasts the bought items over the socket once the POST is handled.
+}
+
+// Moves a bought item's row out of the main list and into the collapsed
+// Bought section; used for both the acting user and other family members.
+function moveItemToBoughtSection(listItem, listItemId, data) {
+    const boughtList = document.getElementById('bought-items-list');
+    if (!boughtList) {
+        // Not on the shopping list page; nothing to update here.
+        return;
+    }
+    if (listItem) {
+        listItem.remove();
+    }
+    if (boughtList.querySelector(`[data-item-id='${listItemId}']`)) {
+        return;
+    }
+    const boughtItem = document.createElement('li');
+    boughtItem.className = 'list-group-item text-muted';
+    boughtItem.dataset.itemId = listItemId;
+    let text = `${data.product_name} (${data.quantity_bought})`;
+    if (data.buyer_display_name) {
+        text += ` \u2014 bought by ${data.buyer_display_name}`;
+    }
+    boughtItem.textContent = text;
+    boughtList.appendChild(boughtItem);
+
+    const boughtCount = document.getElementById('bought-count');
+    if (boughtCount) {
+        boughtCount.textContent = boughtList.children.length;
+    }
+}
+
+function showBasketBoughtModal(buyerDisplayName, itemCount) {
+    const modalElement = document.getElementById('basketBoughtModal');
+    const modalBody = document.getElementById('basketBoughtModalBody');
+    if (!modalElement || !modalBody) {
+        // Not on a page with the notification modal available.
+        return;
+    }
+    const itemWord = itemCount === 1 ? 'item' : 'items';
+    modalBody.textContent = `${buyerDisplayName} bought ${itemCount} ${itemWord}.`; // eslint-disable-line
+    bootstrap.Modal.getOrCreateInstance(modalElement).show();
+}
+
 // WebSocket setup
+{% if request.family %}
+const currentUsername = "{{ request.user.username|escapejs }}";
 const wsProt = window.location.protocol === "https:" ? "wss" : "ws";
-const wsUrl = `${wsProt}://${window.location.host}/ws/`;
+const wsUrl = `${wsProt}://${window.location.host}/ws/families/{{ request.family.public_id }}/shopping-list/`; // noqa
 const socket = new WebSocket(wsUrl);
 
 socket.onmessage = function(event) {
     const data = JSON.parse(event.data);
+
+    if (data.type === 'basket_bought') {
+        // The person who bought the items already sees the result of
+        // their own action; only notify everyone else.
+        if (data.buyer_username !== currentUsername) {
+            showBasketBoughtModal(data.buyer_display_name, data.item_count);
+        }
+        return;
+    }
+
     const listItemId = String(data.list_item_id);
-    const bought = data.bought;
+    const inBasket = data.in_basket;
     const cancelled = data.cancelled;
 
     // Find the item in the DOM and update it
-    const listItem = document.querySelector(
+    const checkbox = document.querySelector(
         `.list-group-item input[value='${listItemId}']`
-    ).closest('.list-group-item');
-    
+    );
+    const listItem = checkbox ? checkbox.closest('.list-group-item') : null;
+
+    if (data.bought) {
+        moveItemToBoughtSection(listItem, listItemId, data);
+        return;
+    }
+
     // Add a console error in case the record for some reason doesn't exist!
     if (!listItem) {
         console.error(`List item with ID ${listItemId} not found`);
@@ -318,19 +403,24 @@ socket.onmessage = function(event) {
         cancelChkbx.checked = false;
     }
 
-    if (bought) {
-        productText.classList.add('bought-text');
+    if (inBasket) {
+        productText.classList.add('in-basket-text');
         cancelChkbx.disabled = true;
         completedChkbx.checked = true;
+        // Only the person who put it in their basket may take it back out;
+        // the server enforces this too, this is just a convenience.
+        if (!cancelled && data.user !== currentUsername) {
+            completedChkbx.disabled = true;
+        }
     } else {
-        productText.classList.remove('bought-text');
+        productText.classList.remove('in-basket-text');
         cancelChkbx.disabled = false;
         completedChkbx.checked = false;
     }
     // this is an improvisation to deal with a rather problematic issue in the html.
-    // It removes the text 'bold-text' from the class if that class also contains 'bought-text'.
+    // It removes the text 'bold-text' from the class if that class also contains 'in-basket-text'.
     // Not pretty, but necessary given the time constraints.
-    if (productText.classList.contains('bold-text') && productText.classList.contains('bought-text')) {
+    if (productText.classList.contains('bold-text') && productText.classList.contains('in-basket-text')) {
         productText.classList.remove('bold-text');
     }
 };
@@ -338,16 +428,7 @@ socket.onmessage = function(event) {
 socket.onerror = function(error) {
     console.error('A WebSocket error has occurred: ', error);
 }
-
-function sendData(itemId, bought, cancelled) {
-    const user = "current_user"; // Replace with actual user data if available
-    socket.send(JSON.stringify({
-        'list_item_id': itemId,
-        'bought': bought,
-        'cancelled': cancelled,
-        'user': user
-    }));
-}
+{% endif %}
 
 //  Summernote for modals
 $('#addProductModal').on('shown.bs.modal', function () {

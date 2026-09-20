@@ -1,0 +1,57 @@
+from django import forms
+from django.contrib.auth.forms import UsernameField
+from django.contrib.auth.models import User
+from django.contrib.auth.validators import UnicodeUsernameValidator
+
+
+class FamilyAdminRegistrationRequestForm(forms.Form):
+    """Stage 1: request registration with a family name and an email."""
+
+    family_name = forms.CharField(max_length=100)
+    email = forms.EmailField()
+
+    def clean_family_name(self):
+        return self.cleaned_data["family_name"].strip()
+
+    def clean_email(self):
+        return self.cleaned_data["email"].strip().lower()
+
+
+class FamilyAdminRegistrationCompletionForm(forms.Form):
+    """Stage 2 (new email): choose the account's username and password."""
+
+    username = UsernameField(
+        max_length=150,
+        validators=[UnicodeUsernameValidator()],
+    )
+    password1 = forms.CharField(strip=False, widget=forms.PasswordInput)
+    password2 = forms.CharField(strip=False, widget=forms.PasswordInput)
+    display_name = forms.CharField(max_length=100, required=False)
+
+    def clean_username(self):
+        username = self.cleaned_data["username"]
+        if User.objects.filter(username__iexact=username).exists():
+            raise forms.ValidationError("That username is already taken.")
+        return username
+
+    def clean_display_name(self):
+        return self.cleaned_data["display_name"].strip()
+
+    def clean(self):
+        cleaned_data = super().clean()
+        password1 = cleaned_data.get("password1")
+        password2 = cleaned_data.get("password2")
+
+        if password1 and password2 and password1 != password2:
+            self.add_error("password2", "The two password fields didn't match.") # noqa
+
+        return cleaned_data
+
+
+class ExistingUserFamilyConfirmationForm(forms.Form):
+    """Stage 2 (email already belongs to a logged-in user): just a display name.""" # noqa
+
+    display_name = forms.CharField(max_length=100, required=False)
+
+    def clean_display_name(self):
+        return self.cleaned_data["display_name"].strip()

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load custom_filters %}
 
 {% block content %}
 
@@ -9,7 +10,7 @@
         <h3 class="mx-3">Current shopping list</h3>
       </div>
       <div class="row">
-        <form id="shopping-list-form" method="post" action="{% url 'shopping_list' %}" class="w-100">
+        <form id="shopping-list-form" method="post" action="{% url 'shopping_list' family_public_id=request.family.public_id %}" class="w-100">
           {% csrf_token %}
           <!-- Input types are defined in javascript and parsed by ShoppingListView.post() -->
           <input type="hidden" id="item-id" name="item_id" value="">
@@ -17,25 +18,45 @@
           <ul id="shopping_list" class="list-group list-group-flush mx-lg-3">
             <li class="list-group-item d-flex justify-content-between align-items-center">
               <h5>Cancelled</h5>
-                <h5>Bought</h5>
+                <h5>In basket</h5>
             </li>
             {% for item in shopping_list %}
             <li class="list-group-item d-flex align-items-center">
                 <input type="checkbox" class="cancel-chkbx" name="cancelled_item" value="{{ item.id }}"
                   {% if item.cancelled %} checked {% endif %} onchange="toggleCancelUncancel(this, '{{ item.id }}')">
-                 <span class="{% if item.cancelled %}text-muted{% elif item.bought %}bought-text{% else %}bold-text{% endif %}">
+                 <span class="{% if item.cancelled %}text-muted{% elif item.in_basket %}in-basket-text{% else %}bold-text{% endif %}">
                     <a id="product-name" class="custom-link product-name-style"
-                      href="{% url 'list_item' slug=item.slug %}">
+                      href="{% url 'list_item' family_public_id=request.family.public_id slug=item.slug %}">
                         {{ item.product.product_name }}
                     </a>
                   </span>
                 <input type="checkbox" class="completed-chkbx ms-auto" name="completed_items" value="{{ item.id }}"
-                  {% if item.bought %} checked {% endif %} onchange="updateDatabase(this, '{{ item.id }}')">
+                  {% if item.in_basket %} checked {% endif %}
+                  {% if item.in_basket and item.put_in_basket_by_id != request.user.id %} disabled {% endif %}
+                  onchange="updateDatabase(this, '{{ item.id }}')">
             </li>
             {% endfor %}
             <button type="submit">Refresh shopping list</button>
-              <a href="{% url 'product_list' %}" class="btn btn-primary">Add item(s) to shopping list</a>
+              <a href="{% url 'product_list' family_public_id=request.family.public_id %}" class="btn btn-primary">Add item(s) to shopping list</a>
+              <button type="button" id="buy-my-basket-btn" class="btn btn-success" onclick="buyMyBasket()">Buy My Basket</button>
           </ul>
+
+          <div class="mx-lg-3 mt-2">
+            <a class="btn btn-link ps-0" data-bs-toggle="collapse" href="#bought-section" role="button"
+              aria-expanded="false" aria-controls="bought-section">
+              Bought (<span id="bought-count">{{ bought_items|length }}</span>)
+            </a>
+            <div class="collapse" id="bought-section">
+              <ul id="bought-items-list" class="list-group list-group-flush">
+                {% for item in bought_items %}
+                <li class="list-group-item text-muted" data-item-id="{{ item.id }}">
+                  {{ item.product.product_name }} ({{ item.quantity_bought }})
+                  {% if item.buyer %} &mdash; bought by {{ item.buyer|member_display_name:request.family }}{% endif %} {# noqa #}
+                </li>
+                {% endfor %}
+              </ul>
+            </div>
+          </div>
         </form>
       </div>
     </div>
