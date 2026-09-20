@@ -47,10 +47,23 @@ class ShoppingConsumer(AsyncWebsocketConsumer):
 
     async def list_item_update(self, event):
         await self.send(text_data=json.dumps({
+            'type': 'list_item_update',
             'list_item_id': event['list_item_id'],
-            'bought': event['bought'],
+            'in_basket': event['in_basket'],
             'cancelled': event['cancelled'],
+            'bought': event['bought'],
+            'product_name': event['product_name'],
+            'quantity_bought': event['quantity_bought'],
+            'buyer_display_name': event['buyer_display_name'],
             'user': event['user']
+        }))
+
+    async def basket_bought(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'basket_bought',
+            'buyer_username': event['buyer_username'],
+            'buyer_display_name': event['buyer_display_name'],
+            'item_count': event['item_count'],
         }))
 
     @database_sync_to_async

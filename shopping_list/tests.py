@@ -3,6 +3,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from asgiref.sync import sync_to_async
 from channels.testing import WebsocketCommunicator
@@ -175,7 +176,7 @@ class CrossFamilyObjectAccessTests(TwoFamilyTestCase):
         self.client.login(username="member_a", password="pass1234")
         response = self.client.post(self.url_a("shopping_list"), {
             "item_id": self.list_item_b.id,
-            "action": "buy",
+            "action": "add_to_basket",
         })
         self.assertEqual(response.status_code, 404)
 
@@ -226,6 +227,192 @@ class CreateUpdateFamilyScopingTests(TwoFamilyTestCase):
         self.assertFalse(
             ListItem.objects.filter(product=self.product_b, family=self.family_a).exists(), # noqa
         )
+
+
+class InBasketOwnershipTests(TwoFamilyTestCase):
+    def test_add_to_basket_records_user_and_timestamp(self):
+        self.client.login(username="member_a", password="pass1234")
+        before = timezone.now()
+        self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "add_to_basket",
+        })
+
+        self.list_item_a.refresh_from_db()
+        self.assertTrue(self.list_item_a.in_basket)
+        self.assertEqual(self.list_item_a.put_in_basket_by, self.member_a)
+        self.assertIsNotNone(self.list_item_a.time_put_in_basket)
+        self.assertGreaterEqual(self.list_item_a.time_put_in_basket, before)
+
+    def test_owner_can_remove_from_basket_and_fields_are_cleared(self):
+        self.list_item_a.in_basket = True
+        self.list_item_a.put_in_basket_by = self.member_a
+        self.list_item_a.time_put_in_basket = timezone.now()
+        self.list_item_a.save()
+
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "remove_from_basket",
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.list_item_a.refresh_from_db()
+        self.assertFalse(self.list_item_a.in_basket)
+        self.assertIsNone(self.list_item_a.put_in_basket_by)
+        self.assertIsNone(self.list_item_a.time_put_in_basket)
+
+    def test_another_family_member_cannot_remove_from_basket(self):
+        self.list_item_a.in_basket = True
+        self.list_item_a.put_in_basket_by = self.admin_a
+        self.list_item_a.time_put_in_basket = timezone.now()
+        self.list_item_a.save()
+
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "remove_from_basket",
+        })
+
+        self.assertEqual(response.status_code, 403)
+        self.list_item_a.refresh_from_db()
+        self.assertTrue(self.list_item_a.in_basket)
+        self.assertEqual(self.list_item_a.put_in_basket_by, self.admin_a)
+
+    def test_removing_item_that_is_not_in_basket_is_rejected(self):
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "remove_from_basket",
+        })
+
+        self.assertEqual(response.status_code, 403)
+        self.list_item_a.refresh_from_db()
+        self.assertFalse(self.list_item_a.in_basket)
+
+    def test_unauthenticated_user_cannot_remove_from_basket(self):
+        self.list_item_a.in_basket = True
+        self.list_item_a.put_in_basket_by = self.member_a
+        self.list_item_a.time_put_in_basket = timezone.now()
+        self.list_item_a.save()
+
+        response = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "remove_from_basket",
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.list_item_a.refresh_from_db()
+        self.assertTrue(self.list_item_a.in_basket)
+        self.assertEqual(self.list_item_a.put_in_basket_by, self.member_a)
+
+    def test_user_from_another_family_cannot_affect_item(self):
+        self.list_item_a.in_basket = True
+        self.list_item_a.put_in_basket_by = self.member_a
+        self.list_item_a.time_put_in_basket = timezone.now()
+        self.list_item_a.save()
+
+        self.client.login(username="member_b", password="pass1234")
+        response = self.client.post(self.url_b("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "remove_from_basket",
+        })
+
+        self.assertEqual(response.status_code, 404)
+        self.list_item_a.refresh_from_db()
+        self.assertTrue(self.list_item_a.in_basket)
+        self.assertEqual(self.list_item_a.put_in_basket_by, self.member_a)
+
+    def test_buyer_field_is_independent_of_put_in_basket_by(self):
+        self.list_item_a.buyer = self.admin_a
+        self.list_item_a.save()
+
+        self.client.login(username="member_a", password="pass1234")
+        self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "add_to_basket",
+        })
+
+        self.list_item_a.refresh_from_db()
+        self.assertEqual(self.list_item_a.put_in_basket_by, self.member_a)
+        # The unrelated future-purchase field is untouched by this action.
+        self.assertEqual(self.list_item_a.buyer, self.admin_a)
+
+
+class BuyBasketTests(TwoFamilyTestCase):
+    def _put_in_basket(self, item, user):
+        item.in_basket = True
+        item.put_in_basket_by = user
+        item.time_put_in_basket = timezone.now()
+        item.save()
+
+    def test_buy_basket_marks_own_basket_items_as_bought_and_empties_basket(self): # noqa
+        self.list_item_a.quantity_required = 3
+        self._put_in_basket(self.list_item_a, self.member_a)
+
+        self.client.login(username="member_a", password="pass1234")
+        before = timezone.now()
+        response = self.client.post(
+            self.url_a("shopping_list"), {"action": "buy_basket"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.list_item_a.refresh_from_db()
+        self.assertEqual(self.list_item_a.buyer, self.member_a)
+        self.assertIsNotNone(self.list_item_a.date_bought)
+        self.assertGreaterEqual(self.list_item_a.date_bought, before)
+        self.assertEqual(self.list_item_a.quantity_bought, 3)
+        self.assertEqual(self.list_item_a.shop_bought, self.list_item_a.preferred_shop) # noqa
+        # The basket is emptied, but the item remains on the current list.
+        self.assertFalse(self.list_item_a.in_basket)
+        self.assertIsNone(self.list_item_a.put_in_basket_by)
+        self.assertIsNone(self.list_item_a.time_put_in_basket)
+        self.assertTrue(self.list_item_a.current)
+
+    def test_buy_basket_does_not_affect_other_users_basket_items(self):
+        self._put_in_basket(self.list_item_a, self.admin_a)
+
+        self.client.login(username="member_a", password="pass1234")
+        self.client.post(self.url_a("shopping_list"), {"action": "buy_basket"}) # noqa
+
+        self.list_item_a.refresh_from_db()
+        self.assertTrue(self.list_item_a.in_basket)
+        self.assertEqual(self.list_item_a.put_in_basket_by, self.admin_a)
+        self.assertIsNone(self.list_item_a.buyer)
+        self.assertIsNone(self.list_item_a.date_bought)
+
+    def test_buy_basket_does_not_affect_items_not_in_basket(self):
+        self.client.login(username="member_a", password="pass1234")
+        self.client.post(self.url_a("shopping_list"), {"action": "buy_basket"}) # noqa
+
+        self.list_item_a.refresh_from_db()
+        self.assertIsNone(self.list_item_a.buyer)
+        self.assertIsNone(self.list_item_a.date_bought)
+
+    def test_buy_basket_is_scoped_to_requesting_users_family(self):
+        self._put_in_basket(self.list_item_b, self.member_b)
+
+        self.client.login(username="member_a", password="pass1234")
+        self.client.post(self.url_a("shopping_list"), {"action": "buy_basket"}) # noqa
+
+        self.list_item_b.refresh_from_db()
+        self.assertTrue(self.list_item_b.in_basket)
+        self.assertIsNone(self.list_item_b.buyer)
+
+
+class BoughtSectionDisplayTests(TwoFamilyTestCase):
+    def test_bought_item_moves_from_shopping_list_to_bought_items_context(self): # noqa
+        self.list_item_a.in_basket = True
+        self.list_item_a.put_in_basket_by = self.member_a
+        self.list_item_a.save()
+        self.client.login(username="member_a", password="pass1234")
+        self.client.post(self.url_a("shopping_list"), {"action": "buy_basket"}) # noqa
+
+        response = self.client.get(self.url_a("shopping_list"))
+
+        self.list_item_a.refresh_from_db()
+        self.assertNotIn(self.list_item_a, response.context["shopping_list"])
+        self.assertIn(self.list_item_a, response.context["bought_items"])
+
+    def test_unpurchased_item_is_not_in_bought_items_context(self):
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.get(self.url_a("shopping_list"))
+
+        self.assertIn(self.list_item_a, response.context["shopping_list"])
+        self.assertNotIn(self.list_item_a, response.context["bought_items"])
 
 
 class ListItemFamilyValidationTests(TwoFamilyTestCase):
@@ -565,12 +752,12 @@ class WebSocketFamilyIsolationTests(TwoFamilyFixtureMixin, TransactionTestCase):
             self.assertTrue(logged_in)
             await sync_to_async(self.client.post)(
                 self.url_a("shopping_list"),
-                {"item_id": self.list_item_a.id, "action": "buy"},
+                {"item_id": self.list_item_a.id, "action": "add_to_basket"},
             )
 
             message = await communicator_a.receive_json_from()
             self.assertEqual(message["list_item_id"], self.list_item_a.id)
-            self.assertTrue(message["bought"])
+            self.assertTrue(message["in_basket"])
             self.assertFalse(message["cancelled"])
             self.assertEqual(message["user"], "admin_a")
 
@@ -629,7 +816,7 @@ class WebSocketFamilyIsolationTests(TwoFamilyFixtureMixin, TransactionTestCase):
             self.assertTrue(logged_in)
             await sync_to_async(self.client.post)(
                 self.url_a("shopping_list"),
-                {"item_id": self.list_item_a.id, "action": "buy"},
+                {"item_id": self.list_item_a.id, "action": "add_to_basket"},
             )
 
             message = await communicator_first.receive_json_from()
@@ -661,10 +848,10 @@ class WebSocketServerAuthorityTests(TwoFamilyFixtureMixin, TransactionTestCase):
         self.assertTrue(connected)
 
         try:
-            # A malicious client claims to be someone else and asserts a
-            # bought/cancelled state that does not match the database.
+            # A malicious client claims to be someone else and asserts an
+            # in_basket/cancelled state that does not match the database.
             await communicator_a.send_to(text_data=(
-                '{"list_item_id": %d, "bought": true, '
+                '{"list_item_id": %d, "in_basket": true, '
                 '"cancelled": true, "user": "admin_a"}'
             ) % self.list_item_a.id)
 
@@ -672,7 +859,7 @@ class WebSocketServerAuthorityTests(TwoFamilyFixtureMixin, TransactionTestCase):
                 await communicator_a.receive_nothing(timeout=0.2),
             )
             await sync_to_async(self.list_item_a.refresh_from_db)()
-            self.assertFalse(self.list_item_a.bought)
+            self.assertFalse(self.list_item_a.in_basket)
             self.assertFalse(self.list_item_a.cancelled)
         finally:
             await communicator_a.disconnect()
@@ -701,7 +888,7 @@ class WebSocketServerAuthorityTests(TwoFamilyFixtureMixin, TransactionTestCase):
         try:
             # member_a claims an item id that actually belongs to family B.
             await communicator_a.send_to(text_data=(
-                '{"list_item_id": %d, "bought": true, '
+                '{"list_item_id": %d, "in_basket": true, '
                 '"cancelled": false, "user": "member_a"}'
             ) % self.list_item_b.id)
 
@@ -718,7 +905,7 @@ class WebSocketServerAuthorityTests(TwoFamilyFixtureMixin, TransactionTestCase):
             self.assertTrue(logged_in)
             response = await sync_to_async(self.client.post)(
                 self.url_a("shopping_list"),
-                {"item_id": self.list_item_b.id, "action": "buy"},
+                {"item_id": self.list_item_b.id, "action": "add_to_basket"},
             )
             self.assertEqual(response.status_code, 404)
 
@@ -731,3 +918,67 @@ class WebSocketServerAuthorityTests(TwoFamilyFixtureMixin, TransactionTestCase):
         finally:
             await communicator_a.disconnect()
             await communicator_b.disconnect()
+
+
+class BuyBasketWebSocketTests(TwoFamilyFixtureMixin, TransactionTestCase):
+    async def test_buy_basket_sends_bought_updates_and_one_grouped_notification(self): # noqa
+        second_item = await sync_to_async(ListItem.objects.create)(
+            product=self.product_a, family=self.family_a,
+            creator=self.admin_a,
+        )
+
+        def put_both_in_basket():
+            for item in (self.list_item_a, second_item):
+                item.in_basket = True
+                item.put_in_basket_by = self.member_a
+                item.time_put_in_basket = timezone.now()
+                item.save()
+
+        await sync_to_async(put_both_in_basket)()
+
+        communicator = WebsocketCommunicator(
+            ShoppingConsumer.as_asgi(), ws_path(self.family_a),
+        )
+        communicator.scope["user"] = self.member_a
+        communicator.scope["url_route"] = {
+            "kwargs": {"family_public_id": self.family_a.public_id},
+        }
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+
+        try:
+            logged_in = await sync_to_async(self.client.login)(
+                username="member_a", password="pass1234",
+            )
+            self.assertTrue(logged_in)
+            await sync_to_async(self.client.post)(
+                self.url_a("shopping_list"), {"action": "buy_basket"},
+            )
+
+            messages = [
+                await communicator.receive_json_from() for _ in range(3)
+            ]
+            item_messages = [
+                m for m in messages if m["type"] == "list_item_update"
+            ]
+            basket_messages = [
+                m for m in messages if m["type"] == "basket_bought"
+            ]
+
+            # Two items were bought, but only one grouped notification is
+            # sent for the whole Buy My Basket operation.
+            self.assertEqual(len(item_messages), 2)
+            for message in item_messages:
+                self.assertTrue(message["bought"])
+                self.assertEqual(message["quantity_bought"], 1)
+                self.assertTrue(message["product_name"])
+
+            self.assertEqual(len(basket_messages), 1)
+            self.assertEqual(basket_messages[0]["item_count"], 2)
+            self.assertEqual(basket_messages[0]["buyer_username"], "member_a")
+
+            self.assertTrue(
+                await communicator.receive_nothing(timeout=0.2),
+            )
+        finally:
+            await communicator.disconnect()

@@ -40,7 +40,7 @@ class PendingFamilyAdminRegistrationAdmin(admin.ModelAdmin):
 class ListItemAdmin(admin.ModelAdmin):
     # Display fields on admin/.../change page
     fields = (
-        'product', 'category', 'preferred_shop', 'bought', 'buyer',
+        'product', 'category', 'preferred_shop', 'in_basket', 'buyer',
         'shop_bought', 'creator_notes', 'shopper_notes', 'cancelled',
         'cancelled_by', 'date_cancelled', 'quantity_required',
         'quantity_bought', 'current',
@@ -62,7 +62,7 @@ class ListItemAdmin(admin.ModelAdmin):
 
     # Group ListItems by Product category and allow filtering
     list_display = (
-        'product', 'category', 'preferred_shop', 'bought', 'cancelled'
+        'product', 'category', 'preferred_shop', 'in_basket', 'cancelled'
     )
 
     # Enable filtering by category (from Product model)

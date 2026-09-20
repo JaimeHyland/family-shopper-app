@@ -131,6 +131,24 @@
 
     </main>
 
+    {% if request.family %}
+    <!-- Notifies other family members when someone buys the items in their basket -->
+    <div class="modal fade" id="basketBoughtModal" tabindex="-1" aria-hidden="true" aria-labelledby="basketBoughtModalLabel">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="basketBoughtModalLabel">Items bought</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body" id="basketBoughtModalBody"></div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-primary" data-bs-dismiss="modal">OK</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
     <!-- Footer -->
     <footer class="footer mt-auto py-3 dark-bg">
         <p class="m-0 text-center text-white">Made by Jaime Hyland, as part of a Code Institute portfolio project</p>
@@ -199,7 +217,7 @@
 
 <script>
 // Change presentation of list items when user turns cancelled or 
-// bought checkboxes to True.
+// in-basket checkboxes to True.
 
 function getCSRFToken() {
     let name = 'csrftoken';
@@ -223,7 +241,7 @@ function toggleCancelUncancel(checkbox, itemId) {
     
     if (checkbox.checked == true) {
         if (confirm(
-            "Are you sure you don't want this item bought this time after all?"
+            "Are you sure you don't want this item in your basket this time after all?"
         )) {
             checkbox.checked == true
             updateDatabase(checkbox, itemId);
@@ -246,7 +264,7 @@ function updateDatabase(checkbox, itemId) {
     if (checkbox.name === 'cancelled_item') {
         action = checkbox.checked ? 'cancel' : 'uncancel';
     } else {
-        action = checkbox.checked ? 'buy' : 'unbuy';
+        action = checkbox.checked ? 'add_to_basket' : 'remove_from_basket';
     }
 
     updateForm(itemId, action);
@@ -282,23 +300,88 @@ function updateForm(itemId, action) {
     document.getElementById('action-type').value = action;
 }
 
+function buyMyBasket() {
+    updateForm('', 'buy_basket');
+    submitForm();
+    // The server broadcasts the bought items over the socket once the POST is handled.
+}
+
+// Moves a bought item's row out of the main list and into the collapsed
+// Bought section; used for both the acting user and other family members.
+function moveItemToBoughtSection(listItem, listItemId, data) {
+    const boughtList = document.getElementById('bought-items-list');
+    if (!boughtList) {
+        // Not on the shopping list page; nothing to update here.
+        return;
+    }
+    if (listItem) {
+        listItem.remove();
+    }
+    if (boughtList.querySelector(`[data-item-id='${listItemId}']`)) {
+        return;
+    }
+    const boughtItem = document.createElement('li');
+    boughtItem.className = 'list-group-item text-muted';
+    boughtItem.dataset.itemId = listItemId;
+    let text = `${data.product_name} (${data.quantity_bought})`;
+    if (data.buyer_display_name) {
+        text += ` \u2014 bought by ${data.buyer_display_name}`;
+    }
+    boughtItem.textContent = text;
+    boughtList.appendChild(boughtItem);
+
+    const boughtCount = document.getElementById('bought-count');
+    if (boughtCount) {
+        boughtCount.textContent = boughtList.children.length;
+    }
+}
+
+function showBasketBoughtModal(buyerDisplayName, itemCount) {
+    const modalElement = document.getElementById('basketBoughtModal');
+    const modalBody = document.getElementById('basketBoughtModalBody');
+    if (!modalElement || !modalBody) {
+        // Not on a page with the notification modal available.
+        return;
+    }
+    const itemWord = itemCount === 1 ? 'item' : 'items';
+    modalBody.textContent = `${buyerDisplayName} bought ${itemCount} ${itemWord}.`; // eslint-disable-line
+    bootstrap.Modal.getOrCreateInstance(modalElement).show();
+}
+
 // WebSocket setup
 {% if request.family %}
+const currentUsername = "{{ request.user.username|escapejs }}";
 const wsProt = window.location.protocol === "https:" ? "wss" : "ws";
 const wsUrl = `${wsProt}://${window.location.host}/ws/families/{{ request.family.public_id }}/shopping-list/`; // noqa
 const socket = new WebSocket(wsUrl);
 
 socket.onmessage = function(event) {
     const data = JSON.parse(event.data);
+
+    if (data.type === 'basket_bought') {
+        // The person who bought the items already sees the result of
+        // their own action; only notify everyone else.
+        if (data.buyer_username !== currentUsername) {
+            showBasketBoughtModal(data.buyer_display_name, data.item_count);
+        }
+        return;
+    }
+
     const listItemId = String(data.list_item_id);
-    const bought = data.bought;
+    const inBasket = data.in_basket;
     const cancelled = data.cancelled;
 
     // Find the item in the DOM and update it
-    const listItem = document.querySelector(
+    const checkbox = document.querySelector(
         `.list-group-item input[value='${listItemId}']`
-    ).closest('.list-group-item');
-    
+    );
+    const listItem = checkbox ? checkbox.closest('.list-group-item') : null;
+
+    if (data.bought) {
+        moveItemToBoughtSection(listItem, listItemId, data);
+        return;
+    }
+
     // Add a console error in case the record for some reason doesn't exist!
     if (!listItem) {
         console.error(`List item with ID ${listItemId} not found`);
@@ -320,19 +403,24 @@ socket.onmessage = function(event) {
         cancelChkbx.checked = false;
     }
 
-    if (bought) {
-        productText.classList.add('bought-text');
+    if (inBasket) {
+        productText.classList.add('in-basket-text');
         cancelChkbx.disabled = true;
         completedChkbx.checked = true;
+        // Only the person who put it in their basket may take it back out;
+        // the server enforces this too, this is just a convenience.
+        if (!cancelled && data.user !== currentUsername) {
+            completedChkbx.disabled = true;
+        }
     } else {
-        productText.classList.remove('bought-text');
+        productText.classList.remove('in-basket-text');
         cancelChkbx.disabled = false;
         completedChkbx.checked = false;
     }
     // this is an improvisation to deal with a rather problematic issue in the html.
-    // It removes the text 'bold-text' from the class if that class also contains 'bought-text'.
+    // It removes the text 'bold-text' from the class if that class also contains 'in-basket-text'.
     // Not pretty, but necessary given the time constraints.
-    if (productText.classList.contains('bold-text') && productText.classList.contains('bought-text')) {
+    if (productText.classList.contains('bold-text') && productText.classList.contains('in-basket-text')) {
         productText.classList.remove('bold-text');
     }
 };

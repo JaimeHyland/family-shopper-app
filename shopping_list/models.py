@@ -406,7 +406,25 @@ class ListItem(models.Model):
     preferred_shop = models.ForeignKey(
         Shop, on_delete=models.SET_NULL, null=True, blank=True
     )
-    bought = models.BooleanField(default=False)
+    # "in_basket" is the existing active shopping-list state (an item
+    # someone currently has in their basket). It is distinct from the
+    # future terminal "actually purchased" concept represented below by
+    # date_bought/buyer/quantity_bought/shop_bought, which remain named
+    # with "bought" deliberately and are not affected by this rename.
+    in_basket = models.BooleanField(default=False)
+    # Describe only the CURRENT in-basket episode; both are cleared to
+    # NULL when the item is taken back out. No history of past episodes
+    # is kept.
+    put_in_basket_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="user_who_put_item_in_basket",
+        null=True,
+        blank=True
+    )
+    time_put_in_basket = models.DateTimeField(
+        default=None, blank=True, null=True,
+    )
     date_bought = models.DateTimeField(default=None, blank=True, null=True)
     buyer = models.ForeignKey(
         User,

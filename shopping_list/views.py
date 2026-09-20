@@ -8,6 +8,7 @@ from .models import (
     Shop,
 )
 from .forms import CategoryForm, ProductForm, ShopForm
+from .templatetags.custom_filters import member_display_name
 from utilities.utils import is_adult
 import logging
 from asgiref.sync import async_to_sync
@@ -16,6 +17,7 @@ from django.contrib.auth.decorators import login_required
 from django.db import transaction
 from django.http import Http404, HttpResponseBadRequest
 from django.shortcuts import render, redirect, get_object_or_404
+from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.contrib import messages
@@ -67,14 +69,44 @@ def broadcast_list_item_update(item, user):
             {
                 'type': 'list_item_update',
                 'list_item_id': item.id,
-                'bought': item.bought,
+                'in_basket': item.in_basket,
                 'cancelled': item.cancelled,
+                'bought': item.date_bought is not None,
+                'product_name': item.product.product_name,
+                'quantity_bought': item.quantity_bought,
+                'buyer_display_name': (
+                    member_display_name(item.buyer, item.family)
+                    if item.buyer_id else None
+                ),
                 'user': user.get_username(),
             }
         )
     except Exception:
         logger.exception(
             "Failed to broadcast list item update for item %s", item.id,
+        )
+
+
+def broadcast_basket_bought(family, buyer, item_count):
+    # One aggregate event per Buy My Basket operation, so other family
+    # members get a single grouped notification instead of one per item.
+    channel_layer = get_channel_layer()
+    if channel_layer is None:
+        return
+
+    try:
+        async_to_sync(channel_layer.group_send)(
+            f"shopping_list_updates_{family.id}",
+            {
+                'type': 'basket_bought',
+                'buyer_username': buyer.get_username(),
+                'buyer_display_name': member_display_name(buyer, family),
+                'item_count': item_count,
+            }
+        )
+    except Exception:
+        logger.exception(
+            "Failed to broadcast basket_bought for family %s", family.id,
         )
 
 
@@ -92,15 +124,26 @@ class ShoppingListView(FamilyMembershipRequiredMixin, View):
 
         shopping_list = ListItem.objects.filter(
             family=request.family,
-            bought=False,
+            in_basket=False,
             cancelled=False,
             current=True,
+            date_bought__isnull=True,
         )
 
         if order_chosen == 'shop':
             shopping_list = shopping_list.order_by('shop_bought__shop_name', 'product__category__category_name') # noqa
         else:
             shopping_list = shopping_list.order_by('product__category__category_name', 'shop_bought__shop_name') # noqa
+
+        # Bought items stay on the current list (current=True) but are
+        # shown separately, in a collapsed section, from the unpurchased
+        # items above.
+        bought_items = ListItem.objects.filter(
+            family=request.family,
+            cancelled=False,
+            current=True,
+            date_bought__isnull=False,
+        ).order_by('-date_bought')
 
         shops = Shop.objects.filter(
             family=request.family,
@@ -109,15 +152,64 @@ class ShoppingListView(FamilyMembershipRequiredMixin, View):
 
         return render(request, 'shopping_list/shopping_list.html', {
             'shopping_list': shopping_list,
+            'bought_items': bought_items,
             'shops': shops,
             'filter_chosen': filter_chosen,
             'order_chosen': order_chosen,
             })
 
+    def _buy_basket(self, request):
+        # Marks every item currently in the requesting user's own basket
+        # as bought and empties their basket. Bought items stay attached
+        # to the current shopping list (current=True) so the frontend can
+        # later show them in a separate "Bought" section.
+        now = timezone.now()
+        basket_items = list(
+            ListItem.objects.filter(
+                family=request.family,
+                in_basket=True,
+                put_in_basket_by=request.user,
+                current=True,
+                cancelled=False,
+            )
+        )
+
+        with transaction.atomic():
+            for item in basket_items:
+                item.buyer = request.user
+                item.date_bought = now
+                item.quantity_bought = item.quantity_required
+                item.shop_bought = item.preferred_shop
+                item.in_basket = False
+                item.put_in_basket_by = None
+                item.time_put_in_basket = None
+                item.save()
+
+        for item in basket_items:
+            transaction.on_commit(
+                lambda item=item: broadcast_list_item_update(
+                    item, request.user,
+                ),
+            )
+
+        if basket_items:
+            transaction.on_commit(
+                lambda: broadcast_basket_bought(
+                    request.family, request.user, len(basket_items),
+                ),
+            )
+
     def post(self, request, *args, **kwargs):
         try:
-            item_id = request.POST.get('item_id')
             action = request.POST.get('action')
+
+            if action == 'buy_basket':
+                self._buy_basket(request)
+                return redirect(
+                    'shopping_list', family_public_id=request.family.public_id, # noqa
+                )
+
+            item_id = request.POST.get('item_id')
             if not item_id or not action:
                 return HttpResponseBadRequest(
                     "Invalid request: Missing item_id or action"
@@ -131,10 +223,19 @@ class ShoppingListView(FamilyMembershipRequiredMixin, View):
                 item.cancelled = True
             elif action == 'uncancel':
                 item.cancelled = False
-            elif action == 'buy':
-                item.bought = True
-            elif action == 'unbuy':
-                item.bought = False
+            elif action == 'add_to_basket':
+                item.in_basket = True
+                item.put_in_basket_by = request.user
+                item.time_put_in_basket = timezone.now()
+            elif action == 'remove_from_basket':
+                if item.put_in_basket_by_id != request.user.id:
+                    raise PermissionDenied(
+                        "Only the person who put this item in their "
+                        "basket can remove it."
+                    )
+                item.in_basket = False
+                item.put_in_basket_by = None
+                item.time_put_in_basket = None
             else:
                 return HttpResponseBadRequest(
                     "Invalid request: Unknown action"
@@ -150,6 +251,8 @@ class ShoppingListView(FamilyMembershipRequiredMixin, View):
 
         except Http404:
             raise
+        except PermissionDenied:
+            raise
         except Exception as e:
             print(f"Error processing POST request: {e}")
             return HttpResponseBadRequest("Invalid request")
@@ -164,7 +267,7 @@ class ListItemView(FamilyMembershipRequiredMixin, View):
             slug=slug,
             family=request.family,
             current=True,
-            bought=False
+            in_basket=False
         )
 
         return render(
