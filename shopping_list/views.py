@@ -133,11 +133,15 @@ GROUP_BY_DIMENSIONS = {
 # explicitly picks one of the GROUP_BY_DIMENSIONS options below.
 GROUP_BY_CHOICES = ['none'] + list(GROUP_BY_DIMENSIONS)
 
-# Shopping-list display settings (currently just grouping and filtering)
-# are remembered for the user's session only; nothing is persisted to the
-# database.
+# Shopping-list and product-list display settings (grouping and
+# filtering) are remembered for the user's session only; nothing is
+# persisted to the database. The two pages have independent settings and
+# different defaults (products default to grouping by category, with
+# filtering off; the shopping list defaults to no grouping).
 SESSION_KEY_GROUP_BY = 'shopping_list_group_by'
 SESSION_KEY_FILTER = 'shopping_list_filter'
+SESSION_KEY_PRODUCT_GROUP_BY = 'product_list_group_by'
+SESSION_KEY_PRODUCT_FILTER = 'product_list_filter'
 
 # 'include' (default): show only items matching a selected category/shop.
 # 'exclude': hide items matching a selected category/shop.
@@ -165,56 +169,84 @@ def _normalize_filter_state(
     }
 
 
-def _apply_filter_state(shopping_list, filter_state):
+def _apply_filter_state_generic(
+    queryset, filter_state, category_lookup, shop_lookup,
+):
     categories = filter_state['categories']
     shops = filter_state['shops']
     if not categories and not shops:
-        return shopping_list
+        return queryset
 
     # Matches if the item's category is one of the selected categories OR
     # its shop is one of the selected shops (i.e. "any selected category
     # or shop" as a single set of matching items).
     any_selected = Q()
     if categories:
-        any_selected |= Q(product__category_id__in=categories)
+        any_selected |= Q(**{f"{category_lookup}__in": categories})
     if shops:
-        any_selected |= Q(preferred_shop_id__in=shops)
+        any_selected |= Q(**{f"{shop_lookup}__in": shops})
 
     if filter_state['mode'] == 'exclude':
         # Hide anything matching any selected category or shop.
-        return shopping_list.exclude(any_selected)
+        return queryset.exclude(any_selected)
 
     if categories and shops:
         # Both facets chosen: narrow to items matching both (an item's
         # category is one of the selected ones AND its shop is one of the
         # selected ones), not merely either.
-        return shopping_list.filter(
-            Q(product__category_id__in=categories)
-            & Q(preferred_shop_id__in=shops)
+        return queryset.filter(
+            Q(**{f"{category_lookup}__in": categories})
+            & Q(**{f"{shop_lookup}__in": shops})
         )
-    return shopping_list.filter(any_selected)
+    return queryset.filter(any_selected)
 
 
-def _group_label_and_sort_key(item, dimension):
-    if dimension == 'shop':
-        shop = item.preferred_shop
-        name = shop.shop_name if shop else None
-        label = name or "No shop set"
-    else:
-        category = item.product.category
-        name = category.category_name if category else None
-        label = name or "Uncategorised"
+def _apply_filter_state(shopping_list, filter_state):
+    return _apply_filter_state_generic(
+        shopping_list, filter_state, 'product__category_id',
+        'preferred_shop_id',
+    )
+
+
+def _apply_product_filter_state(products, filter_state):
+    return _apply_filter_state_generic(
+        products, filter_state, 'category_id', 'default_shop_id',
+    )
+
+
+def _label_and_sort_key_for_name(name, missing_label):
+    label = name or missing_label
     # The "missing" bucket always sorts first; named groups are
     # alphabetical thereafter.
     sort_key = (0, "") if name is None else (1, name.lower())
     return label, sort_key
 
 
-def _bucket_items(items, dimension):
+def _group_label_and_sort_key(item, dimension):
+    if dimension == 'shop':
+        shop = item.preferred_shop
+        name = shop.shop_name if shop else None
+        return _label_and_sort_key_for_name(name, "No shop set")
+    category = item.product.category
+    name = category.category_name if category else None
+    return _label_and_sort_key_for_name(name, "Uncategorised")
+
+
+def _product_group_label_and_sort_key(product, dimension):
+    if dimension == 'shop':
+        shop = product.default_shop
+        name = shop.shop_name if shop else None
+        return _label_and_sort_key_for_name(name, "No shop set")
+    category = product.category
+    name = category.category_name if category else None
+    return _label_and_sort_key_for_name(name, "Uncategorised")
+
+
+def _bucket_items(items, dimension, label_and_sort_key_func):
     buckets = {}
     sort_keys = {}
     for item in items:
-        label, sort_key = _group_label_and_sort_key(item, dimension)
+        label, sort_key = label_and_sort_key_func(item, dimension)
         buckets.setdefault(label, []).append(item)
         sort_keys[label] = sort_key
     return [
@@ -223,15 +255,17 @@ def _bucket_items(items, dimension):
     ]
 
 
-def group_shopping_list_items(items, group_by):
+def _group_items(items, group_by, label_and_sort_key_func):
     # Builds at most a two-level structure: a list of
     # {'label', 'items', 'subgroups'} dicts, where 'subgroups' is a list of
     # (label, items) tuples when a secondary dimension is requested.
     primary_dim, secondary_dim = GROUP_BY_DIMENSIONS[group_by]
     groups = []
-    for label, group_items in _bucket_items(items, primary_dim):
+    for label, group_items in _bucket_items(
+        items, primary_dim, label_and_sort_key_func,
+    ):
         subgroups = (
-            _bucket_items(group_items, secondary_dim)
+            _bucket_items(group_items, secondary_dim, label_and_sort_key_func)
             if secondary_dim else None
         )
         groups.append({
@@ -240,6 +274,14 @@ def group_shopping_list_items(items, group_by):
             'subgroups': subgroups,
         })
     return groups
+
+
+def group_shopping_list_items(items, group_by):
+    return _group_items(items, group_by, _group_label_and_sort_key)
+
+
+def group_products(products, group_by):
+    return _group_items(products, group_by, _product_group_label_and_sort_key)
 
 
 @method_decorator(login_required, name='dispatch')
@@ -458,28 +500,85 @@ class ListItemView(FamilyMembershipRequiredMixin, View):
 @method_decorator(login_required, name='dispatch')
 class ProductListView(FamilyMembershipRequiredMixin, View):
     def get(self, request, *args, **kwargs):
+        requested_group_by = request.GET.get('group_by')
+        if requested_group_by is None:
+            group_by = request.session.get(
+                SESSION_KEY_PRODUCT_GROUP_BY, 'category',
+            )
+            if group_by not in GROUP_BY_CHOICES:
+                group_by = 'category'
+        else:
+            group_by = (
+                requested_group_by
+                if requested_group_by in GROUP_BY_CHOICES else 'category'
+            )
+            request.session[SESSION_KEY_PRODUCT_GROUP_BY] = group_by
 
-        product_list = Product.objects.filter(
-            family=request.family, current=True,
-        ).order_by('category__category_name', 'date_created')
-
-        grouped_products = {}
-
-        # Group products by category
-        for product in product_list:
-            category_name = product.category.category_name
-            if category_name not in grouped_products:
-                grouped_products[category_name] = []
-            grouped_products[category_name].append(product)
-        # For the AddProductModalDialog to populate the dropdowns
+        # Options for the "Add product" modal's dropdowns: unchanged,
+        # every category/shop for the family regardless of active status.
         categories = Category.objects.filter(family=request.family)
         shops = Shop.objects.filter(family=request.family)
 
+        # Options for the filter modal: only currently-active ones, each
+        # annotated with whether it's presently selected.
+        filter_categories = list(Category.objects.filter(
+            family=request.family, current=True,
+        ).order_by('category_name'))
+        filter_shops = list(Shop.objects.filter(
+            family=request.family, current=True,
+        ).order_by('type_of_shop'))
+        category_ids = {category.id for category in filter_categories}
+        shop_ids = {shop.id for shop in filter_shops}
+
+        if request.GET.get('filter_applied') is None:
+            stored_filter = request.session.get(
+                SESSION_KEY_PRODUCT_FILTER, {},
+            )
+            filter_state = _normalize_filter_state(
+                stored_filter.get('categories', []),
+                stored_filter.get('shops', []),
+                stored_filter.get('mode', 'include'),
+                category_ids, shop_ids,
+            )
+        else:
+            filter_state = _normalize_filter_state(
+                request.GET.getlist('filter_categories'),
+                request.GET.getlist('filter_shops'),
+                request.GET.get('filter_mode', 'include'),
+                category_ids, shop_ids,
+            )
+            request.session[SESSION_KEY_PRODUCT_FILTER] = filter_state
+
+        for category in filter_categories:
+            category.is_filter_selected = (
+                category.id in filter_state['categories']
+            )
+        for shop in filter_shops:
+            shop.is_filter_selected = shop.id in filter_state['shops']
+
+        product_list = Product.objects.filter(
+            family=request.family, current=True,
+        ).select_related(
+            'category', 'default_shop',
+        ).order_by('category__category_name', 'date_created')
+        product_list = _apply_product_filter_state(product_list, filter_state) # noqa
+
+        grouped_products = (
+            group_products(list(product_list), group_by)
+            if group_by != 'none' else None
+        )
+
         return render(request, 'shopping_list/product_list.html', {
+            'product_list': product_list,
             'grouped_products': grouped_products,
+            'group_by': group_by,
+            'filter_state': filter_state,
             'categories': categories,
-            'shops': shops
+            'shops': shops,
+            'filter_categories': filter_categories,
+            'filter_shops': filter_shops,
         })
+
 
 
 @method_decorator(login_required, name='dispatch')
