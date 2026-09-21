@@ -9,27 +9,25 @@
 {% block content %}
 
 <div class="container">
-    <h1>Welcome to the Hyland Family's Shopping List App!</h1>
-    <p>This app is currently a tool designed for the private use of the Hyland family. It is also open to third parties authorised by the family</p>
-    <p>If you're already a registered Hyland, please <a href="{% url 'account_login' %}">log in</a> to use the App.</p>
-    <p>If you're not and you want to become one, please ask the Site Boss personally to create a user and initial password for you.</p>
+    <h1>Family Shopping List</h1>
+    <p>Already have an account? <a href="{% url 'account_login' %}">Log in</a>.</p>
 
-    <h3>Outside users</h3>
-    <p>If you do not know the Site Boss personally, than it's unlikely you'll want to enter this site, unless you're here to examine the
-    app for assessment purposes, for example. If that is the case, you'll already have received three different login credentials 
-    (one set as a superuser, one as a normal adult user and one as a child), each with an 
-    initial password, which you should modify upon first logging in.</p>
-
-    <p>Assessors will have three identities: . Each category of user
-        will have a different password.</p>
-
-    <p>We may in the future extend this App's functionality for use by other families. A message to this effect will appear on this page
-        if and when that happens</p>
-    
-    <h3>First-time users</h3>
-    <p>If you're signing in for the first time, the first you should change the password given to you by the Site Boss.
-        Otherwise, the Site Boss will be in a position to sign in pretending to be you, and possibly mess around with the data in the site
-        and blame you.</p>
-    <a href="{% url 'account_login' %}" class="btn btn-loginout right">Go to Log-in page</a>
+    <h3>Register your family</h3>
+    <p>Enter your family's name and your email address. We'll email you a link to finish setting up your account as that family's admin.</p> {# noqa #}
+    <form method="post" action="{% url 'logged_out_homepage' %}">
+        {% csrf_token %}
+        {{ form.non_field_errors }}
+        <div class="mb-3">
+            <label for="{{ form.family_name.id_for_label }}" class="form-label">Family name</label> {# noqa #}
+            {{ form.family_name }}
+            {{ form.family_name.errors }}
+        </div>
+        <div class="mb-3">
+            <label for="{{ form.email.id_for_label }}" class="form-label">Email address</label> {# noqa #}
+            {{ form.email }}
+            {{ form.email.errors }}
+        </div>
+        <button type="submit" class="btn btn-primary">Register my family</button>
+    </form>
 </div>
 {% endblock %}

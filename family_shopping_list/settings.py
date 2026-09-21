@@ -12,20 +12,20 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 
 from pathlib import Path
 import os
+import sys
+
 import dj_database_url
-# import env 
-
-# The following code does not successfully instruct Django to 
-# reading the host's 'DEBUG'  config var. They are, however, 
-# needed to let Django read all the other config vars.
-if os.path.isfile('env.py'):
-  import env # noqa
-
-DEBUG = False
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Load local settings without overriding deployed environment variables.
+load_dotenv(BASE_DIR / ".env")
+
+RUNNING_TESTS = "test" in sys.argv
+
+DEBUG = os.environ.get("DEBUG", "False").strip().lower() == "true"
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ.get("SECRET_KEY")
@@ -43,7 +43,6 @@ ALLOWED_HOSTS = [
 INSTALLED_APPS = [
     'channels',
     'daphne',
-    'cloudinary',
     'shopping_list',
     'django_summernote',
     'django.contrib.admin',
@@ -56,7 +55,6 @@ INSTALLED_APPS = [
     'allauth',
     'allauth.account',
     'allauth.socialaccount',
-    'cloudinary_storage',
     'crispy_forms',
 ]
 
@@ -64,7 +62,9 @@ LOGIN_URL = 'logged_out_homepage'
 
 # Required by django-allauth
 SITE_ID = 1
-LOGIN_REDIRECT_URL = 'shopping_list'
+# 'shopping_list' now requires a family_public_id, so post-login routing
+# goes through the homepage's membership-count-aware redirect instead.
+LOGIN_REDIRECT_URL = 'logged_out_homepage'
 LOGOUT_REDIRECT_URL = 'logged_out_homepage'
 
 MIDDLEWARE = [
@@ -140,8 +140,30 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-# Required by django-allauth: no verification of account by e-mail required
+# Required by django-allauth: no verification of account by e-mail required.
+# (Family-admin public self-registration uses its own dedicated,
+# verified-email flow instead; ordinary/managed members are unaffected and
+# may still have no email address at all.)
 ACCOUNT_EMAIL_VERIFICATION = 'none'
+# Keeps username/password login working as-is; login is not made ambiguous
+# or email-based. New Family admins log in the same way, via username.
+ACCOUNT_ADAPTER = 'shopping_list.adapters.NoPublicSignupAccountAdapter'
+
+# Email
+# https://docs.djangoproject.com/en/5.1/topics/email/
+EMAIL_BACKEND = os.environ.get(
+    "EMAIL_BACKEND",
+    "django.core.mail.backends.console.EmailBackend" if DEBUG
+    else "django.core.mail.backends.smtp.EmailBackend",
+)
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "True").strip().lower() == "true" # noqa
+DEFAULT_FROM_EMAIL = os.environ.get(
+    "DEFAULT_FROM_EMAIL", "webmaster@localhost",
+)
 
 
 # Internationalization
@@ -163,9 +185,22 @@ STATIC_URL = '/static/'
 STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static')]
 # For deployed project only
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-# Explicit reference to whitenoise recommended for Daphne-based apps.
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 WHITENOISE_MIMETYPES = {'.webmanifest': 'application/manifest', }
+
+# The manifest backend requires collectstatic to have been run, so tests
+# use the plain finder-based backend instead of whitenoise's manifest one.
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": (
+            "django.contrib.staticfiles.storage.StaticFilesStorage"
+            if RUNNING_TESTS
+            else "whitenoise.storage.CompressedManifestStaticFilesStorage"
+        ),
+    },
+}
 
 # This prevents the session expiring every time the browser closes the app.
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False
@@ -178,17 +213,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # Daphne
 ASGI_APPLICATION = "family_shopping_list.asgi.application"
 
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/3.2/howto/static-files/
-
-# STATIC_URL = '/static/'
-# STATICFILES_STORAGE = 'cloudinary_storage.storage.StaticHashedCloudinaryStorage' # noqa
-
-# STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static')]
-# STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-
 MEDIA_URL = '/media/'
-DEFAULT_FILE_STORAGE = 'cloudinary_storage.storage.MediaCloudinaryStorage'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 CRISPY_TEMPLATE_PACK = "Bootstrap5"
 
