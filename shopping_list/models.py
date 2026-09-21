@@ -288,12 +288,14 @@ class Product(models.Model):
         related_name="products",
     )
     category = models.ForeignKey(
-        Category, on_delete=models.CASCADE, related_name="product_category"
+        Category, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="product_category",
     )
     default_quantity = models.IntegerField(null=True, blank=True)
     default_unit = models.CharField(max_length=32, null=True, blank=True)
     default_shop = models.ForeignKey(
-        Shop, on_delete=models.CASCADE, related_name="default_where_to_buy"
+        Shop, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="default_where_to_buy",
     )
     creator = models.ForeignKey(
         settings.AUTH_USER_MODEL,

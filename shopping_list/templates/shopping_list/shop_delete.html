@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="col-12 mt-3">
+  <div class="row justify-content-center">
+    <div class="col-lg-8">
+      <h3 class="mx-3">Delete shop</h3>
+      <form method="post" action="" class="w-100">
+        {% csrf_token %}
+        {% if affected_products %}
+        <div class="alert alert-warning mx-3">
+          The following products currently use "{{ shop.shop_name }}" as their default shop.
+          Choose a new default shop for each, or leave "No default shop", before deleting it.
+        </div>
+        <ul class="list-group list-group-flush mx-lg-3 mb-3">
+          {% for product in affected_products %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <label for="reassign_shop_{{ product.id }}" class="me-2">{{ product.product_name }}</label>
+            <select name="reassign_shop_{{ product.id }}" id="reassign_shop_{{ product.id }}" class="form-select w-auto">
+              <option value="">No default shop</option>
+              {% for other_shop in other_shops %}
+              <option value="{{ other_shop.id }}">{{ other_shop.shop_name }}</option>
+              {% endfor %}
+            </select>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="mx-3">Are you sure you want to delete "{{ shop.shop_name }}"? No products currently use it as their default shop.</p>
+        {% endif %}
+        <button type="submit" class="btn btn-danger">Confirm delete</button>
+        <a href="{% url 'shop_detail' family_public_id=request.family.public_id slug=shop.slug %}" class="btn btn-secondary">Cancel</a>
+      </form>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

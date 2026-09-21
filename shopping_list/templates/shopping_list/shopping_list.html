@@ -7,9 +7,30 @@
   <div class="row justify-content-center">
     <div class="col-lg-8">
       <div class="row">
-        <h3 class="mx-3">Current shopping list</h3>
+        <div class="col-12 d-flex flex-wrap align-items-center justify-content-between mb-2">
+          <h3 class="mx-3 mb-2">Current shopping list</h3>
+          <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mx-3 mb-2">
+            <form method="get" action="{% url 'shopping_list' family_public_id=request.family.public_id %}" class="d-flex align-items-center gap-1 mb-0">
+              <label for="group-by-select" class="mb-0">Group by:</label>
+              <select id="group-by-select" name="group_by" onchange="this.form.submit()">
+                <option value="none" {% if group_by == 'none' %}selected{% endif %}>No grouping</option>
+                <option value="category" {% if group_by == 'category' %}selected{% endif %}>Category</option>
+                <option value="category_shop" {% if group_by == 'category_shop' %}selected{% endif %}>Category, then shop</option>
+                <option value="shop" {% if group_by == 'shop' %}selected{% endif %}>Shop</option>
+                <option value="shop_category" {% if group_by == 'shop_category' %}selected{% endif %}>Shop, then category</option>
+              </select>
+            </form>
+            <div class="d-flex align-items-center gap-1">
+              <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#filterModal">
+                Filter{% if filter_state.categories or filter_state.shops %} (active){% endif %}
+              </button>
+              {% if filter_state.categories or filter_state.shops %}
+              <a class="btn btn-link btn-sm" href="{% url 'shopping_list' family_public_id=request.family.public_id %}?filter_applied=1">Remove filter</a>
+              {% endif %}
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="row">
         <form id="shopping-list-form" method="post" action="{% url 'shopping_list' family_public_id=request.family.public_id %}" class="w-100">
           {% csrf_token %}
           <!-- Input types are defined in javascript and parsed by ShoppingListView.post() -->
@@ -20,22 +41,27 @@
               <h5>Cancelled</h5>
                 <h5>In basket</h5>
             </li>
-            {% for item in shopping_list %}
-            <li class="list-group-item d-flex align-items-center">
-                <input type="checkbox" class="cancel-chkbx" name="cancelled_item" value="{{ item.id }}"
-                  {% if item.cancelled %} checked {% endif %} onchange="toggleCancelUncancel(this, '{{ item.id }}')">
-                 <span class="{% if item.cancelled %}text-muted{% elif item.in_basket %}in-basket-text{% else %}bold-text{% endif %}">
-                    <a id="product-name" class="custom-link product-name-style"
-                      href="{% url 'list_item' family_public_id=request.family.public_id slug=item.slug %}">
-                        {{ item.product.product_name }}
-                    </a>
-                  </span>
-                <input type="checkbox" class="completed-chkbx ms-auto" name="completed_items" value="{{ item.id }}"
-                  {% if item.in_basket %} checked {% endif %}
-                  {% if item.in_basket and item.put_in_basket_by_id != request.user.id %} disabled {% endif %}
-                  onchange="updateDatabase(this, '{{ item.id }}')">
-            </li>
-            {% endfor %}
+            {% if grouped_shopping_list is not None %}
+              {% for group in grouped_shopping_list %}
+              <li class="list-group-item bg-light fw-bold">{{ group.label }}</li>
+              {% if group.subgroups %}
+                {% for sub_label, sub_items in group.subgroups %}
+                <li class="list-group-item ps-4 fst-italic text-muted">{{ sub_label }}</li>
+                {% for item in sub_items %}
+                  {% include "shopping_list/_list_item_row.html" %}
+                {% endfor %}
+                {% endfor %}
+              {% else %}
+                {% for item in group.items %}
+                  {% include "shopping_list/_list_item_row.html" %}
+                {% endfor %}
+              {% endif %}
+              {% endfor %}
+            {% else %}
+              {% for item in shopping_list %}
+                {% include "shopping_list/_list_item_row.html" %}
+              {% endfor %}
+            {% endif %}
             <button type="submit">Refresh shopping list</button>
               <a href="{% url 'product_list' family_public_id=request.family.public_id %}" class="btn btn-primary">Add item(s) to shopping list</a>
               <button type="button" id="buy-my-basket-btn" class="btn btn-success" onclick="buyMyBasket()">Buy My Basket</button>
@@ -59,6 +85,58 @@
           </div>
         </form>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal to allow the user to filter the shopping list by category/shop -->
+<div class="modal fade" id="filterModal" tabindex="-1" aria-labelledby="filterModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-scrollable">
+    <div class="modal-content">
+      <form method="get" action="{% url 'shopping_list' family_public_id=request.family.public_id %}" class="d-flex flex-column overflow-hidden" style="min-height: 0;">
+        <input type="hidden" name="filter_applied" value="1">
+        <div class="modal-header">
+          <h5 class="modal-title" id="filterModalLabel">Filter shopping list</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="px-3 pt-3">
+          <fieldset class="mb-2">
+            <legend class="h6 mb-1">Mode</legend>
+            <div class="form-check form-check-inline">
+              <input class="form-check-input" type="radio" name="filter_mode" value="include" id="filter-mode-include" {% if filter_state.mode == 'include' %}checked{% endif %}>
+              <label class="form-check-label" for="filter-mode-include">Show only selected</label>
+            </div>
+            <div class="form-check form-check-inline">
+              <input class="form-check-input" type="radio" name="filter_mode" value="exclude" id="filter-mode-exclude" {% if filter_state.mode == 'exclude' %}checked{% endif %}>
+              <label class="form-check-label" for="filter-mode-exclude">Hide selected</label>
+            </div>
+          </fieldset>
+        </div>
+        <div class="modal-body">
+          <fieldset class="mb-3">
+            <legend class="h6 mb-1">Filter by category</legend>
+            {% for category in categories %}
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="filter_categories" value="{{ category.id }}" id="filter-category-{{ category.id }}" {% if category.is_filter_selected %}checked{% endif %}>
+              <label class="form-check-label" for="filter-category-{{ category.id }}">{{ category.category_name }}</label>
+            </div>
+            {% endfor %}
+          </fieldset>
+          <fieldset>
+            <legend class="h6 mb-1">Filter by shop</legend>
+            {% for shop in shops %}
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="filter_shops" value="{{ shop.id }}" id="filter-shop-{{ shop.id }}" {% if shop.is_filter_selected %}checked{% endif %}>
+              <label class="form-check-label" for="filter-shop-{{ shop.id }}">{{ shop.shop_name }}</label>
+            </div>
+            {% endfor %}
+          </fieldset>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Apply filter</button>
+        </div>
+      </form>
     </div>
   </div>
 </div>
