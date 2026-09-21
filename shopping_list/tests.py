@@ -4,12 +4,18 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
+from types import SimpleNamespace
 
 from asgiref.sync import sync_to_async
 from channels.testing import WebsocketCommunicator
 
 from family_shopping_list.consumers import ShoppingConsumer
 from .forms import CategoryForm, ProductForm, ShopForm
+from .views import (
+    GROUP_BY_DIMENSIONS,
+    _group_label_and_sort_key,
+    group_shopping_list_items,
+)
 from .models import (
     AutomaticAdultGroupMembership,
     Category,
@@ -229,6 +235,46 @@ class CreateUpdateFamilyScopingTests(TwoFamilyTestCase):
         )
 
 
+class CategoryEditTests(TwoFamilyTestCase):
+    def test_category_detail_get_renders_editable_form_with_current_values(self): # noqa
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.get(
+            self.url_a("category_detail", slug=self.category_a.slug),
+        )
+
+        self.assertEqual(
+            response.context["form"].initial["category_name"],
+            "Category A",
+        )
+
+    def test_category_edit_saves_changes_and_redirects_to_category_list(self): # noqa
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.post(
+            self.url_a("category_detail", slug=self.category_a.slug),
+            {"category_name": "Renamed Category", "notes": "Some notes"},
+        )
+
+        self.assertRedirects(response, self.url_a("category_list"))
+        self.category_a.refresh_from_db()
+        self.assertEqual(self.category_a.category_name, "Renamed Category")
+        self.assertEqual(self.category_a.notes, "Some notes")
+
+    def test_category_edit_rejects_duplicate_name_and_keeps_original(self):
+        Category.objects.create(
+            category_name="Other Category", family=self.family_a,
+            creator=self.admin_a,
+        )
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.post(
+            self.url_a("category_detail", slug=self.category_a.slug),
+            {"category_name": "Other Category", "notes": ""},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.category_a.refresh_from_db()
+        self.assertEqual(self.category_a.category_name, "Category A")
+
+
 class InBasketOwnershipTests(TwoFamilyTestCase):
     def test_add_to_basket_records_user_and_timestamp(self):
         self.client.login(username="member_a", password="pass1234")
@@ -413,6 +459,592 @@ class BoughtSectionDisplayTests(TwoFamilyTestCase):
 
         self.assertIn(self.list_item_a, response.context["shopping_list"])
         self.assertNotIn(self.list_item_a, response.context["bought_items"])
+
+
+class GroupingHelperTests(TestCase):
+    """Unit tests for the pure grouping helpers, using lightweight stand-ins
+    instead of real ListItems, since Product.category and preferred_shop
+    can't both be exercised as missing through the ORM alone (category is a
+    required field; only preferred_shop can genuinely be null)."""
+
+    @staticmethod
+    def _item(category_name=None, shop_name=None):
+        category = SimpleNamespace(category_name=category_name) if category_name else None # noqa
+        shop = SimpleNamespace(shop_name=shop_name) if shop_name else None
+        return SimpleNamespace(
+            product=SimpleNamespace(category=category),
+            preferred_shop=shop,
+        )
+
+    def test_missing_category_is_labelled_uncategorised_and_sorts_first(self): # noqa
+        label, sort_key = _group_label_and_sort_key(self._item(), 'category')
+        self.assertEqual(label, "Uncategorised")
+
+        _, named_sort_key = _group_label_and_sort_key(
+            self._item(category_name="Dairy"), 'category',
+        )
+        self.assertLess(sort_key, named_sort_key)
+
+    def test_missing_shop_is_labelled_and_sorts_first(self):
+        label, sort_key = _group_label_and_sort_key(self._item(), 'shop')
+        self.assertEqual(label, "No shop set")
+
+        _, named_sort_key = _group_label_and_sort_key(
+            self._item(shop_name="Aldi"), 'shop',
+        )
+        self.assertLess(sort_key, named_sort_key)
+
+    def test_group_shopping_list_items_builds_subgroups_for_combined_dimensions(self): # noqa
+        items = [
+            self._item(category_name="Dairy", shop_name="Aldi"),
+            self._item(category_name="Dairy", shop_name="Rewe"),
+        ]
+        groups = group_shopping_list_items(items, 'category_shop')
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]['label'], "Dairy")
+        subgroup_labels = [label for label, _ in groups[0]['subgroups']]
+        self.assertEqual(subgroup_labels, ["Aldi", "Rewe"])
+
+
+class ShoppingListGroupingTests(TwoFamilyTestCase):
+    def setUp(self):
+        super().setUp()
+        self.dairy = Category.objects.create(
+            category_name="Dairy", family=self.family_a, creator=self.admin_a, # noqa
+        )
+        self.fruit_veg = Category.objects.create(
+            category_name="Fruit & Vegetables", family=self.family_a,
+            creator=self.admin_a,
+        )
+        self.aldi = Shop.objects.create(
+            shop_name="Aldi", type_of_shop=1,
+            family=self.family_a, creator=self.admin_a,
+        )
+
+        self.butter = Product.objects.create(
+            product_name="Butter", family=self.family_a,
+            category=self.dairy, default_shop=self.shop_a,
+            creator=self.admin_a,
+        )
+        self.apples = Product.objects.create(
+            product_name="Apples", family=self.family_a,
+            category=self.fruit_veg, default_shop=self.aldi,
+            creator=self.admin_a,
+        )
+        self.butter_item = ListItem.objects.create(
+            product=self.butter, family=self.family_a, creator=self.admin_a,
+        )
+        self.apples_item = ListItem.objects.create(
+            product=self.apples, family=self.family_a, creator=self.admin_a,
+        )
+        # self.list_item_a (Product A / Category A / Shop A) also exists
+        # from the base fixture.
+
+    def test_default_is_no_grouping(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(self.url_a("shopping_list"))
+
+        self.assertEqual(response.context["group_by"], "none")
+        self.assertIsNone(response.context["grouped_shopping_list"])
+        self.assertIn(self.butter_item, response.context["shopping_list"])
+        self.assertIn(self.apples_item, response.context["shopping_list"])
+
+    def test_grouping_by_category(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(
+            self.url_a("shopping_list"), {"group_by": "category"},
+        )
+
+        labels = [g['label'] for g in response.context["grouped_shopping_list"]] # noqa
+        self.assertEqual(
+            labels, ["Category A", "Dairy", "Fruit & Vegetables"],
+        )
+        for group in response.context["grouped_shopping_list"]:
+            self.assertIsNone(group['subgroups'])
+
+    def test_grouping_by_shop(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(
+            self.url_a("shopping_list"), {"group_by": "shop"},
+        )
+
+        labels = [g['label'] for g in response.context["grouped_shopping_list"]] # noqa
+        self.assertEqual(labels, ["Aldi", "Shop A"])
+
+    def test_grouping_by_category_then_shop_has_subgroups(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(
+            self.url_a("shopping_list"), {"group_by": "category_shop"},
+        )
+
+        groups = {
+            g['label']: g for g in response.context["grouped_shopping_list"]
+        }
+        fruit_veg_subgroups = dict(groups["Fruit & Vegetables"]['subgroups'])
+        self.assertIn(self.apples_item, fruit_veg_subgroups["Aldi"])
+
+    def test_grouping_by_shop_then_category_has_subgroups(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(
+            self.url_a("shopping_list"), {"group_by": "shop_category"},
+        )
+
+        groups = {
+            g['label']: g for g in response.context["grouped_shopping_list"]
+        }
+        aldi_subgroups = dict(groups["Aldi"]['subgroups'])
+        self.assertIn(self.apples_item, aldi_subgroups["Fruit & Vegetables"])
+
+    def test_invalid_group_by_falls_back_to_no_grouping(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(
+            self.url_a("shopping_list"), {"group_by": "nonsense"},
+        )
+
+        self.assertEqual(response.context["group_by"], "none")
+        self.assertIsNone(response.context["grouped_shopping_list"])
+
+    def test_group_by_choice_persists_in_session_across_requests(self):
+        self.client.login(username="admin_a", password="pass1234")
+        self.client.get(self.url_a("shopping_list"), {"group_by": "shop"})
+
+        # No group_by in this request: should still come from the session.
+        response = self.client.get(self.url_a("shopping_list"))
+
+        self.assertEqual(response.context["group_by"], "shop")
+        self.assertIsNotNone(response.context["grouped_shopping_list"])
+
+    def test_choosing_no_grouping_again_overwrites_session_choice(self):
+        self.client.login(username="admin_a", password="pass1234")
+        self.client.get(self.url_a("shopping_list"), {"group_by": "category"}) # noqa
+        self.client.get(self.url_a("shopping_list"), {"group_by": "none"})
+
+        response = self.client.get(self.url_a("shopping_list"))
+
+        self.assertEqual(response.context["group_by"], "none")
+        self.assertIsNone(response.context["grouped_shopping_list"])
+
+    def test_item_with_no_preferred_shop_appears_in_no_shop_group_first(self): # noqa
+        # ListItem.save() auto-fills preferred_shop from the product's
+        # default shop, so simulate the real-world way it can end up
+        # null: a bare DB update, as Shop.delete() (SET_NULL) would do.
+        ListItem.objects.filter(pk=self.butter_item.pk).update(
+            preferred_shop=None,
+        )
+
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(
+            self.url_a("shopping_list"), {"group_by": "shop"},
+        )
+
+        groups = response.context["grouped_shopping_list"]
+        self.assertEqual(groups[0]['label'], "No shop set")
+        self.assertIn(self.butter_item, groups[0]['items'])
+
+
+class ShoppingListFilterTests(TwoFamilyTestCase):
+    def setUp(self):
+        super().setUp()
+        self.dairy = Category.objects.create(
+            category_name="Dairy", family=self.family_a, creator=self.admin_a, # noqa
+        )
+        self.fruit_veg = Category.objects.create(
+            category_name="Fruit & Vegetables", family=self.family_a,
+            creator=self.admin_a,
+        )
+        self.aldi = Shop.objects.create(
+            shop_name="Aldi", type_of_shop=1,
+            family=self.family_a, creator=self.admin_a,
+        )
+        self.rewe = Shop.objects.create(
+            shop_name="Rewe", type_of_shop=1,
+            family=self.family_a, creator=self.admin_a,
+        )
+        self.butter = Product.objects.create(
+            product_name="Butter", family=self.family_a,
+            category=self.dairy, default_shop=self.aldi,
+            creator=self.admin_a,
+        )
+        self.apples = Product.objects.create(
+            product_name="Apples", family=self.family_a,
+            category=self.fruit_veg, default_shop=self.rewe,
+            creator=self.admin_a,
+        )
+        self.carrots = Product.objects.create(
+            product_name="Carrots", family=self.family_a,
+            category=self.fruit_veg, default_shop=self.aldi,
+            creator=self.admin_a,
+        )
+        self.butter_item = ListItem.objects.create(
+            product=self.butter, family=self.family_a, creator=self.admin_a,
+        )
+        self.apples_item = ListItem.objects.create(
+            product=self.apples, family=self.family_a, creator=self.admin_a,
+        )
+        self.carrots_item = ListItem.objects.create(
+            product=self.carrots, family=self.family_a, creator=self.admin_a,
+        )
+        # self.list_item_a (Product A / Category A / Shop A) also exists
+        # from the base fixture, and matches none of the above.
+
+    def test_default_is_no_filter(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(self.url_a("shopping_list"))
+
+        self.assertEqual(
+            response.context["filter_state"],
+            {"categories": [], "shops": [], "mode": "include"},
+        )
+        items = response.context["shopping_list"]
+        self.assertIn(self.list_item_a, items)
+        self.assertIn(self.butter_item, items)
+        self.assertIn(self.apples_item, items)
+        self.assertIn(self.carrots_item, items)
+
+    def test_filter_by_single_category(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(self.url_a("shopping_list"), {
+            "filter_applied": "1", "filter_categories": [self.dairy.id],
+        })
+
+        self.assertEqual(
+            list(response.context["shopping_list"]), [self.butter_item],
+        )
+
+    def test_filter_by_multiple_categories_is_or_within_facet(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(self.url_a("shopping_list"), {
+            "filter_applied": "1",
+            "filter_categories": [self.dairy.id, self.fruit_veg.id],
+        })
+
+        items = set(response.context["shopping_list"])
+        self.assertEqual(
+            items, {self.butter_item, self.apples_item, self.carrots_item},
+        )
+
+    def test_filter_by_shop(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(self.url_a("shopping_list"), {
+            "filter_applied": "1", "filter_shops": [self.aldi.id],
+        })
+
+        items = set(response.context["shopping_list"])
+        self.assertEqual(items, {self.butter_item, self.carrots_item})
+
+    def test_filter_by_category_and_shop_is_and_across_facets(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(self.url_a("shopping_list"), {
+            "filter_applied": "1",
+            "filter_categories": [self.fruit_veg.id],
+            "filter_shops": [self.aldi.id],
+        })
+
+        # Fruit & Vegetables AND Aldi: only carrots qualifies; apples is
+        # Fruit & Veg but at Rewe, butter is at Aldi but Dairy.
+        self.assertEqual(
+            list(response.context["shopping_list"]), [self.carrots_item],
+        )
+
+    def test_exclude_mode_hides_selected_category(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(self.url_a("shopping_list"), {
+            "filter_applied": "1", "filter_categories": [self.dairy.id],
+            "filter_mode": "exclude",
+        })
+
+        items = set(response.context["shopping_list"])
+        self.assertEqual(
+            items, {self.list_item_a, self.apples_item, self.carrots_item},
+        )
+
+    def test_exclude_mode_combines_category_and_shop_as_union(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(self.url_a("shopping_list"), {
+            "filter_applied": "1",
+            "filter_categories": [self.dairy.id],
+            "filter_shops": [self.rewe.id],
+            "filter_mode": "exclude",
+        })
+
+        # Hides butter (Dairy) and apples (Rewe); carrots and list_item_a
+        # match neither and remain.
+        items = set(response.context["shopping_list"])
+        self.assertEqual(items, {self.list_item_a, self.carrots_item})
+
+    def test_invalid_mode_falls_back_to_include(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(self.url_a("shopping_list"), {
+            "filter_applied": "1", "filter_mode": "nonsense",
+        })
+
+        self.assertEqual(response.context["filter_state"]["mode"], "include")
+
+    def test_another_familys_ids_are_ignored(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(self.url_a("shopping_list"), {
+            "filter_applied": "1",
+            "filter_categories": [self.category_b.id],
+            "filter_shops": [self.shop_b.id],
+        })
+
+        self.assertEqual(
+            response.context["filter_state"],
+            {"categories": [], "shops": [], "mode": "include"},
+        )
+        self.assertIn(self.list_item_a, response.context["shopping_list"])
+
+    def test_filter_choice_persists_in_session_across_requests(self):
+        self.client.login(username="admin_a", password="pass1234")
+        self.client.get(self.url_a("shopping_list"), {
+            "filter_applied": "1", "filter_categories": [self.dairy.id],
+        })
+
+        response = self.client.get(self.url_a("shopping_list"))
+
+        self.assertEqual(
+            response.context["filter_state"]["categories"], [self.dairy.id],
+        )
+        self.assertEqual(
+            list(response.context["shopping_list"]), [self.butter_item],
+        )
+
+    def test_removing_filter_resets_to_no_filter(self):
+        self.client.login(username="admin_a", password="pass1234")
+        self.client.get(self.url_a("shopping_list"), {
+            "filter_applied": "1", "filter_categories": [self.dairy.id],
+        })
+        self.client.get(self.url_a("shopping_list"), {"filter_applied": "1"})
+
+        response = self.client.get(self.url_a("shopping_list"))
+
+        self.assertEqual(
+            response.context["filter_state"],
+            {"categories": [], "shops": [], "mode": "include"},
+        )
+        self.assertIn(self.list_item_a, response.context["shopping_list"])
+
+    def test_filter_combines_with_grouping(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(self.url_a("shopping_list"), {
+            "filter_applied": "1",
+            "filter_categories": [self.dairy.id],
+            "group_by": "shop",
+        })
+
+        groups = response.context["grouped_shopping_list"]
+        labels = [g['label'] for g in groups]
+        self.assertEqual(labels, ["Aldi"])
+        self.assertIn(self.butter_item, groups[0]['items'])
+
+
+class ProductDeleteTests(TwoFamilyTestCase):
+    def test_get_shows_confirmation_page(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(
+            self.url_a("product_delete", slug=self.product_a.slug),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["product"], self.product_a)
+
+    def test_adult_can_deactivate_product(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.post(
+            self.url_a("product_delete", slug=self.product_a.slug),
+        )
+
+        self.assertRedirects(response, self.url_a("product_list"))
+        self.product_a.refresh_from_db()
+        self.assertFalse(self.product_a.current)
+
+    def test_non_adult_cannot_deactivate_product(self):
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.post(
+            self.url_a("product_delete", slug=self.product_a.slug),
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.product_a.refresh_from_db()
+        self.assertTrue(self.product_a.current)
+
+    def test_cross_family_product_delete_returns_404(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.post(
+            self.url_a("product_delete", slug=self.product_b.slug),
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+
+class ShopDeleteTests(TwoFamilyTestCase):
+    def setUp(self):
+        super().setUp()
+        self.other_shop_a = Shop.objects.create(
+            shop_name="Other Shop A", type_of_shop=1,
+            family=self.family_a, creator=self.admin_a,
+        )
+
+    def test_get_with_no_dependent_products_shows_plain_confirmation(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(
+            self.url_a("shop_delete", slug=self.other_shop_a.slug),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.context["affected_products"]), [])
+
+    def test_get_lists_products_using_this_as_default_shop(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(
+            self.url_a("shop_delete", slug=self.shop_a.slug),
+        )
+
+        self.assertIn(self.product_a, response.context["affected_products"])
+
+    def test_deleting_shop_with_no_dependents_just_deactivates_it(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.post(
+            self.url_a("shop_delete", slug=self.other_shop_a.slug),
+        )
+
+        self.assertRedirects(response, self.url_a("shop_list"))
+        self.other_shop_a.refresh_from_db()
+        self.assertFalse(self.other_shop_a.current)
+
+    def test_reassigning_dependent_products_to_another_shop(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.post(
+            self.url_a("shop_delete", slug=self.shop_a.slug),
+            {f"reassign_shop_{self.product_a.id}": self.other_shop_a.id},
+        )
+
+        self.assertRedirects(response, self.url_a("shop_list"))
+        self.product_a.refresh_from_db()
+        self.assertEqual(self.product_a.default_shop, self.other_shop_a)
+        self.shop_a.refresh_from_db()
+        self.assertFalse(self.shop_a.current)
+
+    def test_leaving_dependent_products_with_no_default_shop(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.post(
+            self.url_a("shop_delete", slug=self.shop_a.slug),
+            {f"reassign_shop_{self.product_a.id}": ""},
+        )
+
+        self.assertRedirects(response, self.url_a("shop_list"))
+        self.product_a.refresh_from_db()
+        self.assertIsNone(self.product_a.default_shop)
+
+    def test_cannot_reassign_dependent_product_to_another_familys_shop(self):
+        self.client.login(username="admin_a", password="pass1234")
+        self.client.post(
+            self.url_a("shop_delete", slug=self.shop_a.slug),
+            {f"reassign_shop_{self.product_a.id}": self.shop_b.id},
+        )
+
+        self.product_a.refresh_from_db()
+        self.assertIsNone(self.product_a.default_shop)
+
+    def test_non_adult_cannot_delete_shop(self):
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.post(
+            self.url_a("shop_delete", slug=self.other_shop_a.slug),
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.other_shop_a.refresh_from_db()
+        self.assertTrue(self.other_shop_a.current)
+
+    def test_cross_family_shop_delete_returns_404(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(
+            self.url_a("shop_delete", slug=self.shop_b.slug),
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+
+class CategoryDeleteTests(TwoFamilyTestCase):
+    def setUp(self):
+        super().setUp()
+        self.other_category_a = Category.objects.create(
+            category_name="Other Category A", family=self.family_a,
+            creator=self.admin_a,
+        )
+
+    def test_get_with_no_dependent_products_shows_plain_confirmation(self):
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.get(
+            self.url_a("category_delete", slug=self.other_category_a.slug),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.context["affected_products"]), [])
+
+    def test_get_lists_products_using_this_category(self):
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.get(
+            self.url_a("category_delete", slug=self.category_a.slug),
+        )
+
+        self.assertIn(self.product_a, response.context["affected_products"])
+
+    def test_deleting_category_with_no_dependents_just_deactivates_it(self):
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.post(
+            self.url_a("category_delete", slug=self.other_category_a.slug),
+        )
+
+        self.assertRedirects(response, self.url_a("category_list"))
+        self.other_category_a.refresh_from_db()
+        self.assertFalse(self.other_category_a.current)
+
+    def test_reassigning_dependent_products_to_another_category(self):
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.post(
+            self.url_a("category_delete", slug=self.category_a.slug),
+            {
+                f"reassign_category_{self.product_a.id}":
+                    self.other_category_a.id,
+            },
+        )
+
+        self.assertRedirects(response, self.url_a("category_list"))
+        self.product_a.refresh_from_db()
+        self.assertEqual(self.product_a.category, self.other_category_a)
+        self.category_a.refresh_from_db()
+        self.assertFalse(self.category_a.current)
+
+    def test_leaving_dependent_products_with_no_category(self):
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.post(
+            self.url_a("category_delete", slug=self.category_a.slug),
+            {f"reassign_category_{self.product_a.id}": ""},
+        )
+
+        self.assertRedirects(response, self.url_a("category_list"))
+        self.product_a.refresh_from_db()
+        self.assertIsNone(self.product_a.category)
+
+    def test_cannot_reassign_dependent_product_to_another_familys_category(self): # noqa
+        self.client.login(username="member_a", password="pass1234")
+        self.client.post(
+            self.url_a("category_delete", slug=self.category_a.slug),
+            {f"reassign_category_{self.product_a.id}": self.category_b.id},
+        )
+
+        self.product_a.refresh_from_db()
+        self.assertIsNone(self.product_a.category)
+
+    def test_cross_family_category_delete_returns_404(self):
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.get(
+            self.url_a("category_delete", slug=self.category_b.slug),
+        )
+
+        self.assertEqual(response.status_code, 404)
 
 
 class ListItemFamilyValidationTests(TwoFamilyTestCase):

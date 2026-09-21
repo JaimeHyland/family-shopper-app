@@ -26,6 +26,13 @@ class ProductForm(forms.ModelForm):
         if self.family:
             self.instance.family = self.family
 
+        # The model fields are nullable so a category/shop can be
+        # deactivated without deleting products that reference them, but
+        # this form (ordinary product creation/editing) still requires
+        # both to be chosen.
+        self.fields["category"].required = True
+        self.fields["default_shop"].required = True
+
         self.fields["category"].queryset = Category.objects.none()
         self.fields["default_shop"].queryset = Shop.objects.none()
 
