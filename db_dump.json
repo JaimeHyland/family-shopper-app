@@ -498,7 +498,7 @@
     "quantity_bought": 0,
     "shop_bought": null,
     "creator_notes": "Needed for Jimmy's breakfast",
-    "shopper_notes": "It's out of stock in Rewe Niederschönhausen!",
+    "shopper_notes": "It's out of stock in Rewe NiederschÃ¶nhausen!",
     "slug": "hemme-milch-37-29",
     "current": true
   }
@@ -2563,7 +2563,7 @@
   "model": "shopping_list.shop",
   "pk": 11,
   "fields": {
-    "shop_name": "BauHaus Französische Buchholz",
+    "shop_name": "BauHaus FranzÃ¶sische Buchholz",
     "slug": "bauhaus-franzosische-buchholz",
     "creator": [
       "JaimeH"
@@ -2611,7 +2611,7 @@
   "model": "shopping_list.shop",
   "pk": 15,
   "fields": {
-    "shop_name": "Aldi Straße vor Schönholz",
+    "shop_name": "Aldi StraÃŸe vor SchÃ¶nholz",
     "slug": "aldi-strae-vor-schonholz",
     "creator": null,
     "date_created": "2024-09-10T12:36:38.968Z",
@@ -2625,7 +2625,7 @@
   "model": "shopping_list.shop",
   "pk": 16,
   "fields": {
-    "shop_name": "Dalriata, Winsstraße",
+    "shop_name": "Dalriata, WinsstraÃŸe",
     "slug": "dalriata-winsstrae",
     "creator": null,
     "date_created": "2024-09-10T18:54:16.170Z",
@@ -2644,7 +2644,7 @@
     "creator": null,
     "date_created": "2024-09-11T12:33:00.761Z",
     "family": 1,
-    "notes": "A long way out, but much bigger than the one in Französische Buchholz!",
+    "notes": "A long way out, but much bigger than the one in FranzÃ¶sische Buchholz!",
     "type_of_shop": 3,
     "current": true
   }
