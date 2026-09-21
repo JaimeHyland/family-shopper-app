@@ -1,0 +1,11 @@
+<li class="list-group-item d-flex justify-content-between align-items-center">
+  <div class="d-flex align-items-center">
+    <span>
+      <a class="link-success link-opacity-30-hover link-underline-opacity-10 mx-3"
+        href="{% url 'product_detail' family_public_id=request.family.public_id slug=product.slug %}">{{ product.product_name }}</a>
+    </span>
+  </div>
+  <div>
+    <input type="checkbox" name="selected-products" class="add-or-delete" value="{{ product.id }}">
+  </div>
+</li>

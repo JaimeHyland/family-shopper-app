@@ -124,11 +124,7 @@ class FamilyIsolationOnReadsTests(TwoFamilyTestCase):
         self.client.login(username="member_a", password="pass1234")
         response = self.client.get(self.url_a("product_list"))
 
-        all_products = [
-            product
-            for products in response.context["grouped_products"].values()
-            for product in products
-        ]
+        all_products = list(response.context["product_list"])
         self.assertIn(self.product_a, all_products)
         self.assertNotIn(self.product_b, all_products)
 
@@ -837,6 +833,113 @@ class ShoppingListFilterTests(TwoFamilyTestCase):
         labels = [g['label'] for g in groups]
         self.assertEqual(labels, ["Aldi"])
         self.assertIn(self.butter_item, groups[0]['items'])
+
+
+class ProductListGroupingAndFilterTests(TwoFamilyTestCase):
+    def setUp(self):
+        super().setUp()
+        self.dairy = Category.objects.create(
+            category_name="Dairy", family=self.family_a, creator=self.admin_a, # noqa
+        )
+        self.aldi = Shop.objects.create(
+            shop_name="Aldi", type_of_shop=1,
+            family=self.family_a, creator=self.admin_a,
+        )
+        self.butter = Product.objects.create(
+            product_name="Butter", family=self.family_a,
+            category=self.dairy, default_shop=self.aldi,
+            creator=self.admin_a,
+        )
+        # self.product_a (Category A / Shop A) also exists from the base
+        # fixture.
+
+    def test_default_group_by_is_category(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(self.url_a("product_list"))
+
+        self.assertEqual(response.context["group_by"], "category")
+        labels = [g['label'] for g in response.context["grouped_products"]]
+        self.assertEqual(labels, ["Category A", "Dairy"])
+
+    def test_group_by_none_gives_a_flat_list(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(
+            self.url_a("product_list"), {"group_by": "none"},
+        )
+
+        self.assertIsNone(response.context["grouped_products"])
+        self.assertIn(self.butter, response.context["product_list"])
+        self.assertIn(self.product_a, response.context["product_list"])
+
+    def test_default_filter_is_off(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(self.url_a("product_list"))
+
+        self.assertEqual(
+            response.context["filter_state"],
+            {"categories": [], "shops": [], "mode": "include"},
+        )
+        self.assertIn(self.butter, response.context["product_list"])
+        self.assertIn(self.product_a, response.context["product_list"])
+
+    def test_filter_by_category(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(self.url_a("product_list"), {
+            "filter_applied": "1", "filter_categories": [self.dairy.id],
+        })
+
+        self.assertEqual(
+            list(response.context["product_list"]), [self.butter],
+        )
+
+    def test_filter_by_shop_exclude_mode(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(self.url_a("product_list"), {
+            "filter_applied": "1", "filter_shops": [self.aldi.id],
+            "filter_mode": "exclude",
+        })
+
+        products = list(response.context["product_list"])
+        self.assertNotIn(self.butter, products)
+        self.assertIn(self.product_a, products)
+
+    def test_filter_and_group_by_persist_independently_in_session(self):
+        self.client.login(username="admin_a", password="pass1234")
+        self.client.get(self.url_a("product_list"), {
+            "group_by": "shop",
+            "filter_applied": "1", "filter_categories": [self.dairy.id],
+        })
+
+        response = self.client.get(self.url_a("product_list"))
+
+        self.assertEqual(response.context["group_by"], "shop")
+        self.assertEqual(
+            response.context["filter_state"]["categories"], [self.dairy.id],
+        )
+
+    def test_another_familys_category_id_is_ignored(self):
+        self.client.login(username="admin_a", password="pass1234")
+        response = self.client.get(self.url_a("product_list"), {
+            "filter_applied": "1",
+            "filter_categories": [self.category_b.id],
+        })
+
+        self.assertEqual(
+            response.context["filter_state"],
+            {"categories": [], "shops": [], "mode": "include"},
+        )
+
+    def test_product_list_grouping_and_filtering_are_independent_of_shopping_list(self): # noqa
+        self.client.login(username="admin_a", password="pass1234")
+        self.client.get(
+            self.url_a("shopping_list"), {"group_by": "shop"},
+        )
+
+        response = self.client.get(self.url_a("product_list"))
+
+        # The shopping list's own group_by choice must not bleed into the
+        # (independently-defaulted) product list.
+        self.assertEqual(response.context["group_by"], "category")
 
 
 class ProductDeleteTests(TwoFamilyTestCase):
