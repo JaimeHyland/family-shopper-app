@@ -36,7 +36,7 @@
           <!-- Input types are defined in javascript and parsed by ShoppingListView.post() -->
           <input type="hidden" id="item-id" name="item_id" value="">
           <input type="hidden" id="action-type" name="action" value="">
-          <ul id="shopping_list" class="list-group list-group-flush mx-lg-3">
+          <ul id="shopping_list" class="list-group list-group-flush mx-lg-3 hide-cancelled">
             <li class="list-group-item d-flex justify-content-between align-items-center">
               <h5>Cancelled</h5>
                 <h5>In basket</h5>
@@ -62,16 +62,16 @@
                 {% include "shopping_list/_list_item_row.html" %}
               {% endfor %}
             {% endif %}
-            <button type="submit">Refresh shopping list</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="cancelled-toggle-btn" onclick="toggleCancelledVisibility()">Show cancelled items</button>
               <a href="{% url 'product_list' family_public_id=request.family.public_id %}" class="btn btn-primary">Add item(s) to shopping list</a>
               <button type="button" id="buy-my-basket-btn" class="btn btn-success" onclick="buyMyBasket()">Buy My Basket</button>
           </ul>
 
           <div class="mx-lg-3 mt-2">
-            <a class="btn btn-link ps-0" data-bs-toggle="collapse" href="#bought-section" role="button"
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="bought-toggle-btn" data-bs-toggle="collapse" data-bs-target="#bought-section"
               aria-expanded="false" aria-controls="bought-section">
-              Bought (<span id="bought-count">{{ bought_items|length }}</span>)
-            </a>
+              <span id="bought-toggle-label">Show bought items</span> (<span id="bought-count">{{ bought_items|length }}</span>)
+            </button>
             <div class="collapse" id="bought-section">
               <ul id="bought-items-list" class="list-group list-group-flush">
                 {% for item in bought_items %}
