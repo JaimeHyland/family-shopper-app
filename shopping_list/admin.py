@@ -97,19 +97,19 @@ class ProductAdmin(admin.ModelAdmin):
 class ShopAdmin(admin.ModelAdmin):
     list_display = ('shop_name', 'slug')
     fields = (
-        'shop_name', 'slug', 'type_of_shop', 'creator',
+        'shop_name', 'slug', 'family', 'type_of_shop', 'creator',
         'date_created', 'notes', 'current',
     )
-    readonly_fields = ('slug', 'date_created', 'creator',)
+    readonly_fields = ('slug', 'family', 'date_created', 'creator',)
 
 
 class CategoryAdmin(admin.ModelAdmin):
     list_display = ('category_name', 'slug')
     fields = (
-        'category_name', 'slug', 'creator', 'date_created',
+        'category_name', 'slug', 'family', 'creator', 'date_created',
         'notes', 'current',
     )
-    readonly_fields = ('slug', 'date_created', 'creator',)
+    readonly_fields = ('slug', 'family', 'date_created', 'creator',)
 
 
 admin.site.register(ListItem, ListItemAdmin)

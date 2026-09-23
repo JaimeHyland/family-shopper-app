@@ -23,6 +23,14 @@ span.in-basket-text a {
     text-decoration-thickness: 3px !important;
 }
 
+/* Cancelled-items visibility toggle: purely a display concern, toggled
+   client-side; never affects which ListItems are actually cancelled.
+   !important is required to win over Bootstrap's .d-flex utility class
+   (display: flex !important), which every row carries unconditionally. */
+#shopping_list.hide-cancelled .cancelled-list-item {
+    display: none !important;
+}
+
 .nav-link.active {
     font-weight: bold;
     color: #007bff;

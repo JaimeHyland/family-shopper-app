@@ -344,8 +344,6 @@ class ShoppingListView(FamilyMembershipRequiredMixin, View):
 
         shopping_list = ListItem.objects.filter(
             family=request.family,
-            in_basket=False,
-            cancelled=False,
             current=True,
             date_bought__isnull=True,
         ).select_related(
@@ -440,10 +438,20 @@ class ShoppingListView(FamilyMembershipRequiredMixin, View):
             )
 
             if action == 'cancel':
+                if item.in_basket:
+                    return HttpResponseBadRequest(
+                        "Cannot cancel an item that is currently in a "
+                        "basket. Remove it from the basket first."
+                    )
                 item.cancelled = True
             elif action == 'uncancel':
                 item.cancelled = False
             elif action == 'add_to_basket':
+                if item.cancelled:
+                    return HttpResponseBadRequest(
+                        "Cannot put a cancelled item in a basket. "
+                        "Un-cancel it first."
+                    )
                 item.in_basket = True
                 item.put_in_basket_by = request.user
                 item.time_put_in_basket = timezone.now()

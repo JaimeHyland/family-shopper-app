@@ -145,6 +145,70 @@ class FamilyIsolationOnReadsTests(TwoFamilyTestCase):
         self.assertNotIn(self.category_b, categories)
 
 
+class ShoppingListVisibilityTests(TwoFamilyTestCase):
+    """
+    Covers the fix for items disappearing from the shopping list: the
+    server must always include cancelled and in-basket items in the
+    "shopping_list" context (current, not yet bought); hiding cancelled
+    items is a client-side-only display concern with no backend
+    involvement, so there's nothing server-side to toggle.
+    """
+
+    def test_cancelled_item_still_appears_in_shopping_list_context(self):
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.get(self.url_a("shopping_list"))
+
+        self.assertIn(self.list_item_a, response.context["shopping_list"])
+
+    def test_item_in_basket_still_appears_in_shopping_list_context(self):
+        self.list_item_a.in_basket = True
+        self.list_item_a.put_in_basket_by = self.member_a
+        self.list_item_a.save()
+
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.get(self.url_a("shopping_list"))
+
+        self.assertIn(self.list_item_a, response.context["shopping_list"])
+
+    def test_cancel_action_leaves_item_visible_in_shopping_list_context(self):
+        self.client.login(username="member_a", password="pass1234")
+        self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "cancel",
+        })
+
+        response = self.client.get(self.url_a("shopping_list"))
+
+        self.list_item_a.refresh_from_db()
+        self.assertTrue(self.list_item_a.cancelled)
+        self.assertIn(self.list_item_a, response.context["shopping_list"])
+
+    def test_repeated_page_loads_do_not_change_list_item_fields(self):
+        self.list_item_a.cancelled = True
+        self.list_item_a.in_basket = True
+        self.list_item_a.put_in_basket_by = self.member_a
+        self.list_item_a.save()
+        before = (
+            self.list_item_a.cancelled,
+            self.list_item_a.in_basket,
+            self.list_item_a.current,
+        )
+
+        self.client.login(username="member_a", password="pass1234")
+        self.client.get(self.url_a("shopping_list"))
+        self.client.get(self.url_a("shopping_list"))
+
+        self.list_item_a.refresh_from_db()
+        after = (
+            self.list_item_a.cancelled,
+            self.list_item_a.in_basket,
+            self.list_item_a.current,
+        )
+        self.assertEqual(before, after)
+
+
 class CrossFamilyObjectAccessTests(TwoFamilyTestCase):
     def test_cross_family_list_item_returns_404(self):
         self.client.login(username="member_a", password="pass1234")
@@ -372,6 +436,148 @@ class InBasketOwnershipTests(TwoFamilyTestCase):
         self.assertEqual(self.list_item_a.put_in_basket_by, self.member_a)
         # The unrelated future-purchase field is untouched by this action.
         self.assertEqual(self.list_item_a.buyer, self.admin_a)
+
+
+class CancelledInBasketExclusivityTests(TwoFamilyTestCase):
+    """Cancelled and in_basket are mutually exclusive: neither state can
+    be entered while the other already applies, and this must hold both
+    for the initial page render and for the POST action handlers."""
+
+    # --- Page-load checkbox reconstruction ---
+
+    def test_cancelled_item_renders_with_in_basket_checkbox_disabled(self):
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.get(self.url_a("shopping_list"))
+        html = response.content.decode()
+
+        completed_input_start = html.index(
+            f'name="completed_items" value="{self.list_item_a.id}"',
+        )
+        row_end = html.index('</li>', completed_input_start)
+        completed_input_markup = html[completed_input_start:row_end]
+        self.assertIn('disabled', completed_input_markup)
+
+    def test_in_basket_item_renders_with_cancelled_checkbox_disabled(self):
+        self.list_item_a.in_basket = True
+        self.list_item_a.put_in_basket_by = self.member_a
+        self.list_item_a.save()
+
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.get(self.url_a("shopping_list"))
+        html = response.content.decode()
+
+        # The cancel checkbox for this item must be disabled.
+        cancel_input_start = html.index(
+            f'name="cancelled_item" value="{self.list_item_a.id}"',
+        )
+        completed_input_start = html.index(
+            'name="completed_items"', cancel_input_start,
+        )
+        cancel_input_markup = html[cancel_input_start:completed_input_start]
+        self.assertIn('disabled', cancel_input_markup)
+
+    def test_normal_item_renders_with_both_checkboxes_enabled(self):
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.get(self.url_a("shopping_list"))
+        html = response.content.decode()
+
+        cancel_input_start = html.index(
+            f'name="cancelled_item" value="{self.list_item_a.id}"',
+        )
+        completed_input_start = html.index(
+            'name="completed_items"', cancel_input_start,
+        )
+        row_markup = html[cancel_input_start:completed_input_start + 200]
+        self.assertNotIn('disabled', row_markup)
+
+    # --- Backend state-transition enforcement ---
+
+    def test_cannot_cancel_an_item_currently_in_a_basket(self):
+        self.list_item_a.in_basket = True
+        self.list_item_a.put_in_basket_by = self.member_a
+        self.list_item_a.save()
+
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "cancel",
+        })
+
+        self.assertEqual(response.status_code, 400)
+        self.list_item_a.refresh_from_db()
+        self.assertFalse(self.list_item_a.cancelled)
+        self.assertTrue(self.list_item_a.in_basket)
+
+    def test_cannot_add_a_cancelled_item_to_the_basket(self):
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "add_to_basket",
+        })
+
+        self.assertEqual(response.status_code, 400)
+        self.list_item_a.refresh_from_db()
+        self.assertFalse(self.list_item_a.in_basket)
+        self.assertTrue(self.list_item_a.cancelled)
+
+    def test_cancelling_a_normal_item_still_works(self):
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "cancel",
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.list_item_a.refresh_from_db()
+        self.assertTrue(self.list_item_a.cancelled)
+
+    def test_adding_a_normal_item_to_the_basket_still_works(self):
+        self.client.login(username="member_a", password="pass1234")
+        response = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "add_to_basket",
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.list_item_a.refresh_from_db()
+        self.assertTrue(self.list_item_a.in_basket)
+
+    def test_uncancelling_then_adding_to_basket_is_allowed(self):
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+
+        self.client.login(username="member_a", password="pass1234")
+        self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "uncancel",
+        })
+        response = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "add_to_basket",
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.list_item_a.refresh_from_db()
+        self.assertTrue(self.list_item_a.in_basket)
+        self.assertFalse(self.list_item_a.cancelled)
+
+    def test_removing_from_basket_then_cancelling_is_allowed(self):
+        self.list_item_a.in_basket = True
+        self.list_item_a.put_in_basket_by = self.member_a
+        self.list_item_a.save()
+
+        self.client.login(username="member_a", password="pass1234")
+        self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "remove_from_basket",
+        })
+        response = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "cancel",
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.list_item_a.refresh_from_db()
+        self.assertTrue(self.list_item_a.cancelled)
+        self.assertFalse(self.list_item_a.in_basket)
 
 
 class BuyBasketTests(TwoFamilyTestCase):

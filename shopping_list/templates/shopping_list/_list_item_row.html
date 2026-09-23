@@ -1,6 +1,8 @@
-<li class="list-group-item d-flex align-items-center">
+<li class="list-group-item d-flex align-items-center{% if item.cancelled %} cancelled-list-item{% endif %}">
     <input type="checkbox" class="cancel-chkbx" name="cancelled_item" value="{{ item.id }}"
-      {% if item.cancelled %} checked {% endif %} onchange="toggleCancelUncancel(this, '{{ item.id }}')">
+      {% if item.cancelled %} checked {% endif %}
+      {% if item.in_basket %} disabled {% endif %}
+      onchange="toggleCancelUncancel(this, '{{ item.id }}')">
      <span class="{% if item.cancelled %}text-muted{% elif item.in_basket %}in-basket-text{% else %}bold-text{% endif %}">
         <a id="product-name" class="custom-link product-name-style"
           href="{% url 'list_item' family_public_id=request.family.public_id slug=item.slug %}">
@@ -9,6 +11,6 @@
       </span>
     <input type="checkbox" class="completed-chkbx ms-auto" name="completed_items" value="{{ item.id }}"
       {% if item.in_basket %} checked {% endif %}
-      {% if item.in_basket and item.put_in_basket_by_id != request.user.id %} disabled {% endif %}
+      {% if item.cancelled or item.in_basket and item.put_in_basket_by_id != request.user.id %} disabled {% endif %}
       onchange="updateDatabase(this, '{{ item.id }}')">
 </li>

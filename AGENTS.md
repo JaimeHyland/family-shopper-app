@@ -32,3 +32,17 @@ Treat cost control as a high priority in every task and future session in this p
 These instructions do not authorize skipping necessary safety checks or
 misrepresenting incomplete work as verified. Do not commit or push this file
 unless the user requests it.
+
+## Architectural analysis before implementation
+
+Before making substantial changes, analyse the existing architecture, data structures, and relevant code paths first. Determine whether the existing structures can support the requirement and identify reasonable implementation options before introducing new models, fields, abstractions, or dependencies. Prefer the simplest solution that fits the existing architecture. Do not make speculative architectural changes.
+
+## Backend before frontend
+
+For features involving both backend and frontend, implement and validate the backend/API layer before beginning frontend work, where practical. The backend should expose the information and behaviour the frontend needs; the frontend should not unnecessarily reconstruct backend/domain logic. Begin frontend implementation only after the appropriate backend tests have passed.
+
+## Phase boundaries
+
+For multi-phase tasks, work in clearly defined phases and report the outcome of each phase before proceeding to the next. Do not silently move from investigation into implementation or from one architectural layer into another.
+
+Do not introduce complexity solely to accommodate hypothetical future requirements. Prefer deferring genuinely disproportionate complexity to a later iteration.
