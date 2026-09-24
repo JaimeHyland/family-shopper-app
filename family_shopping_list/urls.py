@@ -54,7 +54,7 @@ urlpatterns = [
         'welcome_page/',
         RedirectView.as_view(pattern_name='logged_out_homepage', permanent=False), # noqa
     ),
-    path('families/<uuid:family_public_id>/', include('shopping_list.urls')), # noqa
+    path('families/<slug:family_slug>/', include('shopping_list.urls')), # noqa
     path('favicon.ico', FaviconRedirectView.as_view()),
     path("accounts/", include("allauth.urls")),
     path(

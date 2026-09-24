@@ -17,7 +17,7 @@
             <div class="d-flex align-items-center">
               <span>
                 <a class="link-success link-opacity-30-hover link-underline-opacity-10 mx-3"
-                  href="{% url 'shop_detail' family_public_id=request.family.public_id slug=shop.slug %}">{{ shop.shop_name }}</a>
+                  href="{% url 'shop_detail' family_slug=request.family.slug slug=shop.slug %}">{{ shop.shop_name }}</a>
               </span>
             </div>
           </li>
@@ -37,7 +37,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
-        <form id="add-shop-form" method="post" action="{% url 'add_shop' family_public_id=request.family.public_id %}">
+        <form id="add-shop-form" method="post" action="{% url 'add_shop' family_slug=request.family.slug %}">
           {% csrf_token %}
           <div class="mb-3">
             <label for="shop_name" class="form-label">Shop name</label>

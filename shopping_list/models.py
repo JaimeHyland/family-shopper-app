@@ -4,6 +4,7 @@ from django.contrib.auth.models import User
 from django.db.models.functions import Lower
 from django.utils.text import slugify
 from django.core.exceptions import ValidationError
+from utilities.utils import generate_unique_slug
 import uuid
 
 
@@ -14,7 +15,25 @@ class Family(models.Model):
         unique=True,
         editable=False,
     )
+    # URL-facing identifier, generated once from name and never changed
+    # afterwards (even if name is later edited). public_id remains the
+    # authoritative DB identity and is not used in URLs.
+    slug = models.SlugField(
+        max_length=250,
+        unique=True,
+        editable=False,
+    )
     date_created = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            self.slug = generate_unique_slug(
+                self.name,
+                lambda candidate: Family.objects.filter(
+                    slug=candidate,
+                ).exists(),
+            )
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name

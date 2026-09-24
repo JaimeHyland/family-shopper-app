@@ -16,7 +16,7 @@ from channels.layers import get_channel_layer
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
 from django.db.models import Q
-from django.http import Http404, HttpResponseBadRequest
+from django.http import Http404, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import render, redirect, get_object_or_404
 from django.utils import timezone
 from django.utils.decorators import method_decorator
@@ -35,16 +35,16 @@ def get_user_memberships(user):
 
 class FamilyMembershipRequiredMixin:
     """
-    Resolves the family explicitly from the `family_public_id` URL kwarg
-    and requires an authenticated membership in it. Attaches both
+    Resolves the family explicitly from the `family_slug` URL kwarg and
+    requires an authenticated membership in it. Attaches both
     `request.family` and `request.family_membership`. Never trusts the
-    UUID merely because the client supplied it, and never reveals whether
+    slug merely because the client supplied it, and never reveals whether
     a family exists to a non-member (404 either way).
     """
 
     def dispatch(self, request, *args, **kwargs):
-        family_public_id = kwargs.get("family_public_id")
-        family = get_object_or_404(Family, public_id=family_public_id)
+        family_slug = kwargs.get("family_slug")
+        family = get_object_or_404(Family, slug=family_slug)
         membership = FamilyMembership.objects.select_related("family").filter( # noqa
             family=family, user=request.user,
         ).first()
@@ -424,7 +424,7 @@ class ShoppingListView(FamilyMembershipRequiredMixin, View):
             if action == 'buy_basket':
                 self._buy_basket(request)
                 return redirect(
-                    'shopping_list', family_public_id=request.family.public_id, # noqa
+                    'shopping_list', family_slug=request.family.slug, # noqa
                 )
 
             item_id = request.POST.get('item_id')
@@ -473,8 +473,14 @@ class ShoppingListView(FamilyMembershipRequiredMixin, View):
             transaction.on_commit(
                 lambda: broadcast_list_item_update(item, request.user),
             )
+            if action in ('cancel', 'uncancel'):
+                # This path is only ever submitted via fetch(); the
+                # response body is never used, so skip the redirect's
+                # wasted extra GET (the live UI update comes over the
+                # WebSocket broadcast above).
+                return JsonResponse({"ok": True})
             return redirect(
-                'shopping_list', family_public_id=request.family.public_id,
+                'shopping_list', family_slug=request.family.slug,
             )
 
         except Http404:
@@ -641,7 +647,7 @@ class ProductView(FamilyMembershipRequiredMixin, View):
         if form.is_valid():
             form.save()
             return redirect(
-                'product_list', family_public_id=request.family.public_id,
+                'product_list', family_slug=request.family.slug,
             )
         else:
             messages.error(request, "A product with this name already exists.")
@@ -673,7 +679,7 @@ class ShopView(FamilyMembershipRequiredMixin, View):
         if form.is_valid():
             form.save()
             return redirect(
-                'shop_list', family_public_id=request.family.public_id,
+                'shop_list', family_slug=request.family.slug,
             )
         else:
             for field, errors in form.errors.items():
@@ -710,7 +716,7 @@ class CategoryView(FamilyMembershipRequiredMixin, View):
         if form.is_valid():
             form.save()
             return redirect(
-                'category_list', family_public_id=request.family.public_id,
+                'category_list', family_slug=request.family.slug,
             )
         else:
             messages.error(request, "A category with this name already exists.") # noqa
@@ -744,7 +750,7 @@ class ProductDeleteView(FamilyMembershipRequiredMixin, View):
         product.current = False
         product.save()
         return redirect(
-            'product_list', family_public_id=request.family.public_id,
+            'product_list', family_slug=request.family.slug,
         )
 
 
@@ -793,7 +799,7 @@ class ShopDeleteView(FamilyMembershipRequiredMixin, View):
         shop.current = False
         shop.save()
         return redirect(
-            'shop_list', family_public_id=request.family.public_id,
+            'shop_list', family_slug=request.family.slug,
         )
 
 
@@ -845,7 +851,7 @@ class CategoryDeleteView(FamilyMembershipRequiredMixin, View):
         category.current = False
         category.save()
         return redirect(
-            'category_list', family_public_id=request.family.public_id,
+            'category_list', family_slug=request.family.slug,
         )
 
 
@@ -868,7 +874,7 @@ class AddToShoppingListView(FamilyMembershipRequiredMixin, View):
             )
 
         return redirect(
-            'shopping_list', family_public_id=request.family.public_id,
+            'shopping_list', family_slug=request.family.slug,
         )
 
 
@@ -884,7 +890,7 @@ class AddProductView(FamilyMembershipRequiredMixin, AdultRequiredMixin, View):
         else:
             messages.error(request, "A product with this name already exists.")
         return redirect(
-            'product_list', family_public_id=request.family.public_id,
+            'product_list', family_slug=request.family.slug,
         )
 
 
@@ -900,7 +906,7 @@ class AddShopView(FamilyMembershipRequiredMixin, AdultRequiredMixin, View):
         else:
             messages.error(request, "A shop with this name already exists.")
         return redirect(
-            'shop_list', family_public_id=request.family.public_id,
+            'shop_list', family_slug=request.family.slug,
         )
 
 
@@ -916,5 +922,5 @@ class AddCategoryView(FamilyMembershipRequiredMixin, View):
         else:
             messages.error(request, "A category with this name already exists.")
         return redirect(
-            'category_list', family_public_id=request.family.public_id,
+            'category_list', family_slug=request.family.slug,
         )

@@ -30,7 +30,7 @@
         <p class="mx-3">Are you sure you want to delete "{{ category.category_name }}"? No products currently use it as their category.</p>
         {% endif %}
         <button type="submit" class="btn btn-danger">Confirm delete</button>
-        <a href="{% url 'category_detail' family_public_id=request.family.public_id slug=category.slug %}" class="btn btn-secondary">Cancel</a>
+        <a href="{% url 'category_detail' family_slug=request.family.slug slug=category.slug %}" class="btn btn-secondary">Cancel</a>
       </form>
     </div>
   </div>

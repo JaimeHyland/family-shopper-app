@@ -57,24 +57,24 @@
                 <ul class="navbar-nav me-auto mb-2 mb-lg-0">
                     {% if user.is_authenticated and request.family %}
                     <li class="nav-item">
-                        {% url 'shopping_list' family_public_id=request.family.public_id as shopping_list_url %}
+                        {% url 'shopping_list' family_slug=request.family.slug as shopping_list_url %}
                         <a class="nav-link {% if request.path == shopping_list_url %}active{% endif %}" aria-current="page"
                             href="{{ shopping_list_url }}">Shopping list</a>
                     </li>
                     <li class="nav-item">
-                        {% url 'product_list' family_public_id=request.family.public_id as product_list_url %}
+                        {% url 'product_list' family_slug=request.family.slug as product_list_url %}
                         <a class="nav-link {% if request.path == product_list_url %}active{% endif %}"
                             aria-current="page" href="{{ product_list_url }}">Products</a>
                     </li>
                     {% endif %}
                     {% if user|is_adult_filter and request.family %}
                     <li class="nav-item">
-                        {% url 'category_list' family_public_id=request.family.public_id as category_list_url %}
+                        {% url 'category_list' family_slug=request.family.slug as category_list_url %}
                         <a class="nav-link {% if request.path == category_list_url %}active{% endif %}"
                             aria-current="page" href="{{ category_list_url }}">Categories</a>
                     </li>
                     <li class="nav-item">
-                        {% url 'shop_list' family_public_id=request.family.public_id as shop_list_url %}
+                        {% url 'shop_list' family_slug=request.family.slug as shop_list_url %}
                         <a class="nav-link {% if request.path == shop_list_url %}active{% endif %}"
                             aria-current="page" href="{{ shop_list_url }}">Shops</a>
                     </li>
@@ -236,21 +236,22 @@ function getCSRFToken() {
 }
 
 function toggleCancelUncancel(checkbox, itemId) {
-    
-    if (checkbox.checked == true) {
+
+    if (checkbox.checked) {
         if (confirm(
             "Are you sure you don't want this item in your basket this time after all?"
         )) {
-            checkbox.checked == true
             updateDatabase(checkbox, itemId);
-        } else  {
-            checkbox.checked == false;
-            updateDatabase(checkbox, itemId);
+        } else {
+            // Declined: revert to uncancelled, no update sent.
+            checkbox.checked = false;
         }
     } else {
         if (confirm("Are you sure you want to put this back on the list?")) {
-            checkbox.checked == false;
             updateDatabase(checkbox, itemId);
+        } else {
+            // Declined: revert to cancelled, no update sent.
+            checkbox.checked = true;
         }
     }
 }
@@ -385,11 +386,12 @@ function showBasketBoughtModal(buyerDisplayName, itemCount) {
 {% if request.family %}
 const currentUsername = "{{ request.user.username|escapejs }}";
 const wsProt = window.location.protocol === "https:" ? "wss" : "ws";
-const wsUrl = `${wsProt}://${window.location.host}/ws/families/{{ request.family.public_id }}/shopping-list/`; // noqa
+const wsUrl = `${wsProt}://${window.location.host}/ws/families/{{ request.family.slug }}/shopping-list/`; // noqa
 const socket = new WebSocket(wsUrl);
 
 socket.onmessage = function(event) {
     const data = JSON.parse(event.data);
+    console.log("DEBUG | WebSocket message:", data);
 
     if (data.type === 'basket_bought') {
         // The person who bought the items already sees the result of

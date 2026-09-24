@@ -30,7 +30,7 @@
         <p class="mx-3">Are you sure you want to delete "{{ shop.shop_name }}"? No products currently use it as their default shop.</p>
         {% endif %}
         <button type="submit" class="btn btn-danger">Confirm delete</button>
-        <a href="{% url 'shop_detail' family_public_id=request.family.public_id slug=shop.slug %}" class="btn btn-secondary">Cancel</a>
+        <a href="{% url 'shop_detail' family_slug=request.family.slug slug=shop.slug %}" class="btn btn-secondary">Cancel</a>
       </form>
     </div>
   </div>

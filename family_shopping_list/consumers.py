@@ -13,10 +13,10 @@ class ShoppingConsumer(AsyncWebsocketConsumer):
             await self.close(code=4401)
             return
 
-        family_public_id = self.scope["url_route"]["kwargs"].get(
-            "family_public_id",
+        family_slug = self.scope["url_route"]["kwargs"].get(
+            "family_slug",
         )
-        family_id = await self._get_member_family_id(user, family_public_id)
+        family_id = await self._get_member_family_id(user, family_slug)
         if family_id is None:
             await self.close(code=4403)
             return
@@ -67,14 +67,14 @@ class ShoppingConsumer(AsyncWebsocketConsumer):
         }))
 
     @database_sync_to_async
-    def _get_member_family_id(self, user, family_public_id):
+    def _get_member_family_id(self, user, family_slug):
         # Explicitly resolves the REQUESTED family; never derives "the"
         # family via .first() now that a user may belong to several.
-        if not family_public_id:
+        if not family_slug:
             return None
         return (
             FamilyMembership.objects
-            .filter(user=user, family__public_id=family_public_id)
+            .filter(user=user, family__slug=family_slug)
             .values_list("family_id", flat=True)
             .first()
         )
