@@ -62,7 +62,7 @@ LOGIN_URL = 'logged_out_homepage'
 
 # Required by django-allauth
 SITE_ID = 1
-# 'shopping_list' now requires a family_public_id, so post-login routing
+# 'shopping_list' now requires a family_slug, so post-login routing
 # goes through the homepage's membership-count-aware redirect instead.
 LOGIN_REDIRECT_URL = 'logged_out_homepage'
 LOGOUT_REDIRECT_URL = 'logged_out_homepage'
@@ -99,9 +99,20 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'family_shopping_list.wsgi.application'
 
+redis_url = os.environ.get("REDISCLOUD_URL")
+
+if redis_url:
+    redis_host = redis_url
+else:
+    redis_host = ("127.0.0.1", 6379)
+
+
 CHANNEL_LAYERS = {
-    'default': {
-        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [redis_host],
+        },
     },
 }
 

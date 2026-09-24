@@ -1,5 +1,16 @@
 # Standing user preference: strict cost discipline
 
+> **MOST-MISSED RULE — CHECK THIS LAST, EVERY TIME:** Any message you are
+> about to send that is a report (investigation report, diagnostic report,
+> phase report, completion report, findings, root-cause analysis - any
+> structured summary written up for the user) MUST be copied to the
+> Windows clipboard via PowerShell `Set-Clipboard` in the SAME turn, before
+> you stop and hand control back to the user. This has been missed
+> repeatedly in the past. Before ending any turn that contains such a
+> report, explicitly re-read the report you just wrote and ask yourself
+> "did I already run Set-Clipboard on this exact content in this turn?" -
+> if not, do it now, then finish.
+
 Treat cost control as a high priority in every task and future session in this project.
 
 - Keep work tightly scoped to the user's request. For simple tasks, take the
@@ -13,14 +24,17 @@ Treat cost control as a high priority in every task and future session in this p
 - Before re-running a test (or suite), check whether anything relevant has
   changed since it last ran. If nothing relevant changed, reuse the prior
   result instead of re-running it.
-- Always copy investigation reports to the Windows clipboard in plain text
-  automatically once produced, without waiting to be asked. Use a single
-  PowerShell `Set-Clipboard` call with a literal here-string (`@'...'@`),
-  not an expandable one (`@"..."@`), so `$` and backtick characters in the
-  report (e.g. code snippets) are not corrupted by interpolation. This
-  should be a one-step operation; do not add multi-step verification
-  beyond a simple length/spot-check when the content has no special
-  characters.
+- Always copy every report (investigation reports, phase reports,
+  completion reports, findings, root-cause analyses - anything written up
+  as a structured summary for the user) to the Windows clipboard in plain
+  text automatically once produced, without waiting to be asked and
+  without being reminded. This applies every single time, with no
+  exceptions. Use a single PowerShell `Set-Clipboard` call with a literal
+  here-string (`@'...'@`), not an expandable one (`@"..."@`), so `$` and
+  backtick characters in the report (e.g. code snippets) are not
+  corrupted by interpolation. This should be a one-step operation; do not
+  add multi-step verification beyond a simple length/spot-check when the
+  content has no special characters.
 - Avoid frequent polling. Use sensible wait intervals and concise updates.
 - Do not delegate to additional agents unless explicitly requested.
 - Before expanding a task into substantial extra investigation or expensive

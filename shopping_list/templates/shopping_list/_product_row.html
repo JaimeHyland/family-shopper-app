@@ -2,7 +2,7 @@
   <div class="d-flex align-items-center">
     <span>
       <a class="link-success link-opacity-30-hover link-underline-opacity-10 mx-3"
-        href="{% url 'product_detail' family_public_id=request.family.public_id slug=product.slug %}">{{ product.product_name }}</a>
+        href="{% url 'product_detail' family_slug=request.family.slug slug=product.slug %}">{{ product.product_name }}</a>
     </span>
   </div>
   <div>

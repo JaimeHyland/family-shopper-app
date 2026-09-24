@@ -46,11 +46,11 @@ def create_family_with_members(name, admin_username, member_usernames=()):
 
 
 def family_url(family, name, **kwargs):
-    return reverse(name, kwargs={"family_public_id": family.public_id, **kwargs}) # noqa
+    return reverse(name, kwargs={"family_slug": family.slug, **kwargs}) # noqa
 
 
 def ws_path(family):
-    return f"/ws/families/{family.public_id}/shopping-list/"
+    return f"/ws/families/{family.slug}/shopping-list/"
 
 
 class TwoFamilyFixtureMixin:
@@ -530,7 +530,10 @@ class CancelledInBasketExclusivityTests(TwoFamilyTestCase):
             "item_id": self.list_item_a.id, "action": "cancel",
         })
 
-        self.assertEqual(response.status_code, 302)
+        # Cancel/uncancel are AJAX-only actions: they return JSON, not a
+        # redirect (the live UI update comes over the WebSocket instead).
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True})
         self.list_item_a.refresh_from_db()
         self.assertTrue(self.list_item_a.cancelled)
 
@@ -574,7 +577,7 @@ class CancelledInBasketExclusivityTests(TwoFamilyTestCase):
             "item_id": self.list_item_a.id, "action": "cancel",
         })
 
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 200)
         self.list_item_a.refresh_from_db()
         self.assertTrue(self.list_item_a.cancelled)
         self.assertFalse(self.list_item_a.in_basket)
@@ -1671,7 +1674,7 @@ class WebSocketFamilyIsolationTests(TwoFamilyFixtureMixin, TransactionTestCase):
         )
         communicator_a.scope["user"] = self.member_a
         communicator_a.scope["url_route"] = {
-            "kwargs": {"family_public_id": self.family_a.public_id},
+            "kwargs": {"family_slug": self.family_a.slug},
         }
         connected_a, _ = await communicator_a.connect()
         self.assertTrue(connected_a)
@@ -1681,7 +1684,7 @@ class WebSocketFamilyIsolationTests(TwoFamilyFixtureMixin, TransactionTestCase):
         )
         communicator_b.scope["user"] = self.member_b
         communicator_b.scope["url_route"] = {
-            "kwargs": {"family_public_id": self.family_b.public_id},
+            "kwargs": {"family_slug": self.family_b.slug},
         }
         connected_b, _ = await communicator_b.connect()
         self.assertTrue(connected_b)
@@ -1714,7 +1717,7 @@ class WebSocketFamilyIsolationTests(TwoFamilyFixtureMixin, TransactionTestCase):
         )
         communicator.scope["user"] = user
         communicator.scope["url_route"] = {
-            "kwargs": {"family_public_id": self.family_a.public_id},
+            "kwargs": {"family_slug": self.family_a.slug},
         }
 
         connected, close_code = await communicator.connect()
@@ -1735,7 +1738,7 @@ class WebSocketFamilyIsolationTests(TwoFamilyFixtureMixin, TransactionTestCase):
         )
         communicator_first.scope["user"] = self.member_a
         communicator_first.scope["url_route"] = {
-            "kwargs": {"family_public_id": self.family_a.public_id},
+            "kwargs": {"family_slug": self.family_a.slug},
         }
         connected_first, _ = await communicator_first.connect()
         self.assertTrue(connected_first)
@@ -1745,7 +1748,7 @@ class WebSocketFamilyIsolationTests(TwoFamilyFixtureMixin, TransactionTestCase):
         )
         communicator_second.scope["user"] = self.member_a
         communicator_second.scope["url_route"] = {
-            "kwargs": {"family_public_id": second_family.public_id},
+            "kwargs": {"family_slug": second_family.slug},
         }
         connected_second, _ = await communicator_second.connect()
         self.assertTrue(connected_second)
@@ -1783,7 +1786,7 @@ class WebSocketServerAuthorityTests(TwoFamilyFixtureMixin, TransactionTestCase):
         )
         communicator_a.scope["user"] = self.member_a
         communicator_a.scope["url_route"] = {
-            "kwargs": {"family_public_id": self.family_a.public_id},
+            "kwargs": {"family_slug": self.family_a.slug},
         }
         connected, _ = await communicator_a.connect()
         self.assertTrue(connected)
@@ -1811,7 +1814,7 @@ class WebSocketServerAuthorityTests(TwoFamilyFixtureMixin, TransactionTestCase):
         )
         communicator_a.scope["user"] = self.member_a
         communicator_a.scope["url_route"] = {
-            "kwargs": {"family_public_id": self.family_a.public_id},
+            "kwargs": {"family_slug": self.family_a.slug},
         }
         connected_a, _ = await communicator_a.connect()
         self.assertTrue(connected_a)
@@ -1821,7 +1824,7 @@ class WebSocketServerAuthorityTests(TwoFamilyFixtureMixin, TransactionTestCase):
         )
         communicator_b.scope["user"] = self.member_b
         communicator_b.scope["url_route"] = {
-            "kwargs": {"family_public_id": self.family_b.public_id},
+            "kwargs": {"family_slug": self.family_b.slug},
         }
         connected_b, _ = await communicator_b.connect()
         self.assertTrue(connected_b)
@@ -1882,7 +1885,7 @@ class BuyBasketWebSocketTests(TwoFamilyFixtureMixin, TransactionTestCase):
         )
         communicator.scope["user"] = self.member_a
         communicator.scope["url_route"] = {
-            "kwargs": {"family_public_id": self.family_a.public_id},
+            "kwargs": {"family_slug": self.family_a.slug},
         }
         connected, _ = await communicator.connect()
         self.assertTrue(connected)

@@ -18,7 +18,7 @@
             <h3 class="mb-0">Products</h3>
           </div>
           <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mx-3 mb-2">
-            <form method="get" action="{% url 'product_list' family_public_id=request.family.public_id %}" class="d-flex align-items-center gap-1 mb-0">
+            <form method="get" action="{% url 'product_list' family_slug=request.family.slug %}" class="d-flex align-items-center gap-1 mb-0">
               <label for="product-group-by-select" class="mb-0">Group by:</label>
               <select id="product-group-by-select" name="group_by" onchange="this.form.submit()">
                 <option value="none" {% if group_by == 'none' %}selected{% endif %}>No grouping</option>
@@ -33,14 +33,14 @@
                 Filter{% if filter_state.categories or filter_state.shops %} (active){% endif %}
               </button>
               {% if filter_state.categories or filter_state.shops %}
-              <a class="btn btn-link btn-sm" href="{% url 'product_list' family_public_id=request.family.public_id %}?filter_applied=1">Remove filter</a>
+              <a class="btn btn-link btn-sm" href="{% url 'product_list' family_slug=request.family.slug %}?filter_applied=1">Remove filter</a>
               {% endif %}
             </div>
           </div>
         </div>
       </div>
       <div class="row">
-        <form id="product-list-form" method="post" action="{% url 'add_to_shopping_list' family_public_id=request.family.public_id %}" class="w-100">
+        <form id="product-list-form" method="post" action="{% url 'add_to_shopping_list' family_slug=request.family.slug %}" class="w-100">
           {% csrf_token %}
           {% if grouped_products is not None %}
             {% for group in grouped_products %}
@@ -86,7 +86,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
-        <form id="add-product-form" method="post" action="{% url 'add_product' family_public_id=request.family.public_id %}">
+        <form id="add-product-form" method="post" action="{% url 'add_product' family_slug=request.family.slug %}">
           {% csrf_token %}
           <div class="mb-3">
             <label for="product_name" class="form-label">Product name</label>
@@ -151,7 +151,7 @@
 <div class="modal fade" id="productFilterModal" tabindex="-1" aria-labelledby="productFilterModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-dialog-scrollable">
     <div class="modal-content">
-      <form method="get" action="{% url 'product_list' family_public_id=request.family.public_id %}" class="d-flex flex-column overflow-hidden" style="min-height: 0;">
+      <form method="get" action="{% url 'product_list' family_slug=request.family.slug %}" class="d-flex flex-column overflow-hidden" style="min-height: 0;">
         <input type="hidden" name="filter_applied" value="1">
         <div class="modal-header">
           <h5 class="modal-title" id="productFilterModalLabel">Filter products</h5>

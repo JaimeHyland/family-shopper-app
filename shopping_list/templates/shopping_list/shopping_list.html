@@ -10,7 +10,7 @@
         <div class="col-12 d-flex flex-wrap align-items-center justify-content-between mb-2">
           <h3 class="mx-3 mb-2">Current shopping list</h3>
           <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mx-3 mb-2">
-            <form method="get" action="{% url 'shopping_list' family_public_id=request.family.public_id %}" class="d-flex align-items-center gap-1 mb-0">
+            <form method="get" action="{% url 'shopping_list' family_slug=request.family.slug %}" class="d-flex align-items-center gap-1 mb-0">
               <label for="group-by-select" class="mb-0">Group by:</label>
               <select id="group-by-select" name="group_by" onchange="this.form.submit()">
                 <option value="none" {% if group_by == 'none' %}selected{% endif %}>No grouping</option>
@@ -25,13 +25,13 @@
                 Filter{% if filter_state.categories or filter_state.shops %} (active){% endif %}
               </button>
               {% if filter_state.categories or filter_state.shops %}
-              <a class="btn btn-link btn-sm" href="{% url 'shopping_list' family_public_id=request.family.public_id %}?filter_applied=1">Remove filter</a>
+              <a class="btn btn-link btn-sm" href="{% url 'shopping_list' family_slug=request.family.slug %}?filter_applied=1">Remove filter</a>
               {% endif %}
             </div>
           </div>
         </div>
       </div>
-        <form id="shopping-list-form" method="post" action="{% url 'shopping_list' family_public_id=request.family.public_id %}" class="w-100">
+        <form id="shopping-list-form" method="post" action="{% url 'shopping_list' family_slug=request.family.slug %}" class="w-100">
           {% csrf_token %}
           <!-- Input types are defined in javascript and parsed by ShoppingListView.post() -->
           <input type="hidden" id="item-id" name="item_id" value="">
@@ -63,14 +63,14 @@
               {% endfor %}
             {% endif %}
             <button type="button" class="btn btn-outline-secondary btn-sm" id="cancelled-toggle-btn" onclick="toggleCancelledVisibility()">Show cancelled items</button>
-              <a href="{% url 'product_list' family_public_id=request.family.public_id %}" class="btn btn-primary">Add item(s) to shopping list</a>
-              <button type="button" id="buy-my-basket-btn" class="btn btn-success" onclick="buyMyBasket()">Buy My Basket</button>
+              <a href="{% url 'product_list' family_slug=request.family.slug %}" class="btn btn-primary">Add item(s) to shopping list</a>
+              <button type="button" id="buy-my-basket-btn" class="btn btn-success" onclick="buyMyBasket()">Check out my basket</button>
           </ul>
 
           <div class="mx-lg-3 mt-2">
             <button type="button" class="btn btn-outline-secondary btn-sm" id="bought-toggle-btn" data-bs-toggle="collapse" data-bs-target="#bought-section"
               aria-expanded="false" aria-controls="bought-section">
-              <span id="bought-toggle-label">Show bought items</span> (<span id="bought-count">{{ bought_items|length }}</span>)
+              <span id="bought-toggle-label">Show purchased items</span> (<span id="bought-count">{{ bought_items|length }}</span>)
             </button>
             <div class="collapse" id="bought-section">
               <ul id="bought-items-list" class="list-group list-group-flush">
@@ -93,7 +93,7 @@
 <div class="modal fade" id="filterModal" tabindex="-1" aria-labelledby="filterModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-dialog-scrollable">
     <div class="modal-content">
-      <form method="get" action="{% url 'shopping_list' family_public_id=request.family.public_id %}" class="d-flex flex-column overflow-hidden" style="min-height: 0;">
+      <form method="get" action="{% url 'shopping_list' family_slug=request.family.slug %}" class="d-flex flex-column overflow-hidden" style="min-height: 0;">
         <input type="hidden" name="filter_applied" value="1">
         <div class="modal-header">
           <h5 class="modal-title" id="filterModalLabel">Filter shopping list</h5>

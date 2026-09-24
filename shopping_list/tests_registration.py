@@ -58,7 +58,7 @@ class LoginTemplateTests(TestCase):
         follow_up = self.client.get(response["Location"])
         self.assertRedirects(
             follow_up,
-            reverse("shopping_list", kwargs={"family_public_id": family.public_id}), # noqa
+            reverse("shopping_list", kwargs={"family_slug": family.slug}), # noqa
         )
 
 
@@ -80,7 +80,7 @@ class HomepageRoutingTests(TestCase):
 
         self.assertRedirects(
             response,
-            reverse("shopping_list", kwargs={"family_public_id": family.public_id}), # noqa
+            reverse("shopping_list", kwargs={"family_slug": family.slug}), # noqa
         )
 
     def test_authenticated_user_without_family_gets_403(self):
@@ -270,7 +270,7 @@ class RegistrationCompletionViewTests(TestCase):
         family = Family.objects.get(name="Successful Family")
         self.assertRedirects(
             response,
-            reverse("shopping_list", kwargs={"family_public_id": family.public_id}), # noqa
+            reverse("shopping_list", kwargs={"family_slug": family.slug}), # noqa
         )
         self.assertEqual(User.objects.filter(username="new_family_admin").count(), 1) # noqa
 
@@ -477,7 +477,7 @@ class ExistingEmailRegistrationTests(TestCase):
         new_family = Family.objects.get(name="Second Family")
         self.assertRedirects(
             response,
-            reverse("shopping_list", kwargs={"family_public_id": new_family.public_id}), # noqa
+            reverse("shopping_list", kwargs={"family_slug": new_family.slug}), # noqa
         )
         memberships = FamilyMembership.objects.filter(user=self.existing_user) # noqa
         self.assertEqual(memberships.count(), 2)

@@ -99,7 +99,7 @@ class HomeView(View):
         if len(memberships) == 1:
             return redirect(
                 "shopping_list",
-                family_public_id=memberships[0].family.public_id,
+                family_slug=memberships[0].family.slug,
             )
         return redirect("family_chooser")
 
@@ -217,7 +217,7 @@ class RegistrationCompletionView(View):
         )
         messages.success(request, "Welcome! Your family has been created.")
         return redirect(
-            "shopping_list", family_public_id=result.family.public_id,
+            "shopping_list", family_slug=result.family.slug,
         )
 
     def _post_existing_user(self, request, token, pending):
@@ -245,7 +245,7 @@ class RegistrationCompletionView(View):
             request, "Your new family has been created.",
         )
         return redirect(
-            "shopping_list", family_public_id=result.family.public_id,
+            "shopping_list", family_slug=result.family.slug,
         )
 
     def _ambiguous_response(self, request):

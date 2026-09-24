@@ -7,7 +7,7 @@
     <ul class="list-group">
         {% for membership in memberships %}
         <li class="list-group-item">
-            <a href="{% url 'shopping_list' family_public_id=membership.family.public_id %}">
+            <a href="{% url 'shopping_list' family_slug=membership.family.slug %}">
                 {{ membership.family.name }}
             </a>
             &mdash; {{ membership.display_name }} ({{ membership.get_role_display }})

@@ -19,7 +19,7 @@
               <div class="d-flex align-items-center">
                 <span>
                   <a class="link-success link-opacity-30-hover link-underline-opacity-10"
-                    href="{% url 'category_detail' family_public_id=request.family.public_id slug=category.slug %}">{{ category.category_name }}</a>
+                    href="{% url 'category_detail' family_slug=request.family.slug slug=category.slug %}">{{ category.category_name }}</a>
                 </span>
               </div>
             </li>
@@ -40,7 +40,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
-        <form id="add-category-form" method="post" action="{% url 'add_category' family_public_id=request.family.public_id %}">
+        <form id="add-category-form" method="post" action="{% url 'add_category' family_slug=request.family.slug %}">
           {% csrf_token %}
           <div class="mb-3">
             <label for="category_name" class="form-label">Category name</label>

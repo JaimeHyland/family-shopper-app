@@ -5,7 +5,7 @@
       onchange="toggleCancelUncancel(this, '{{ item.id }}')">
      <span class="{% if item.cancelled %}text-muted{% elif item.in_basket %}in-basket-text{% else %}bold-text{% endif %}">
         <a id="product-name" class="custom-link product-name-style"
-          href="{% url 'list_item' family_public_id=request.family.public_id slug=item.slug %}">
+          href="{% url 'list_item' family_slug=request.family.slug slug=item.slug %}">
             {{ item.product.product_name }}
         </a>
       </span>
