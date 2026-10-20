@@ -21,12 +21,16 @@
 ## The EU Grocery Shopper
 
   Private lable (shop brand / no brand; such as Aldi's Lacura, Specially Selected, Simply Nature) now stands at 40% of share possibly due to inflation - *the type of product is becoming equally as relevant as the brand name than the brand EXAMPLE: fyffes banana's V organic banana's
+    Design Implications: The app should allow users to organise shopping lists by product type, brand preference and budget, making it easy to compare branded and private-label alternatives. Users should be able to specify what matters most to them, such as price, organic certification or product quality, rather than relying solely on brand names.
+
   Generally Grocery has been growing quite slowly, only growing by 3.4% in 2025 - more of a focus on AI.
+    Design Implications: The app should prioritise features that provide clear value to users, such as reducing planning effort, simplifying list creation and suggesting relevant products. AI could support these tasks through personalised suggestions, list generation and predictive item reminders, while keeping users in control of their shopping decisions.
+
   Typically grociery stores are reviewed more positivly if online - 75% of grocery stores in the McKinsey recieved a higher score online against physical store.
     - This could be due to customers wanting different things from online V physical store
           - Physical Store: Convenence of location, low prices, promotions/ special offers
           - Online: Value for money, product quality & ease of use (UX)
-      Design Implications: 
+      Design Implications: The app should reflect the different priorities of online and in-store shoppers. Features should support easy list management, clear product information, price comparisons and value-for-money decisions. Lists should also be practical to use in physical stores, with clear categories and an intuitive checklist that makes finding and ticking off items straightforward.
 
   Income changes shopping habbits in users 
     - Lower Income: Look for low-cost items
