@@ -71,6 +71,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.locale.LocaleMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -181,6 +182,18 @@ DEFAULT_FROM_EMAIL = os.environ.get(
 # https://docs.djangoproject.com/en/5.1/topics/i18n/
 
 LANGUAGE_CODE = 'en-us'
+
+# Restricts Django's own request-language detection (Accept-Language
+# header, session, cookie - via LocaleMiddleware below) to the languages
+# the app actually has translations for. The translated strings
+# themselves live in per-app translations/<lang>.json catalogs (see
+# shopping_list/templatetags/i18n_json.py), not Django's gettext/.po/.mo
+# catalogs - this setting only governs which language gets selected.
+LANGUAGES = [
+    ('en', 'English'),
+    ('de', 'German'),
+    ('es', 'Spanish'),
+]
 
 TIME_ZONE = 'UTC'
 
