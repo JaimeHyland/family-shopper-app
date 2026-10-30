@@ -1,0 +1,49 @@
+{
+  "name": "Irish student essentials",
+  "categories": [
+    {
+      "name": "Vegetables",
+      "products": ["Potatoes", "Onions", "Carrots", "Broccoli", "Mushrooms", "Peppers"]
+    },
+    {
+      "name": "Fruit",
+      "products": ["Apples", "Bananas", "Oranges"]
+    },
+    {
+      "name": "Bread and Bakery",
+      "products": ["Sliced bread", "Bread rolls", "Wraps"]
+    },
+    {
+      "name": "Dairy and Eggs",
+      "products": ["Milk", "Butter", "Cheddar cheese", "Eggs", "Natural yoghurt"]
+    },
+    {
+      "name": "Meat and Fish",
+      "products": ["Chicken fillets", "Beef mince", "Cooked ham", "Tinned tuna"]
+    },
+    {
+      "name": "Cupboard Staples",
+      "products": [
+        "Porridge oats", "Wheat biscuits", "Pasta", "Rice", "Noodles",
+        "Baked beans", "Tinned tomatoes", "Chickpeas", "Pasta sauce",
+        "Vegetable oil", "Peanut butter", "Jam"
+      ]
+    },
+    {
+      "name": "Frozen Food",
+      "products": ["Frozen peas", "Frozen mixed vegetables", "Frozen pizza"]
+    },
+    {
+      "name": "Snacks",
+      "products": ["Crackers", "Cereal bars", "Popcorn"]
+    },
+    {
+      "name": "Tea, Coffee and Drinks",
+      "products": ["Tea bags", "Instant coffee", "Orange juice"]
+    },
+    {
+      "name": "Household Essentials",
+      "products": ["Toilet paper", "Washing-up liquid", "Laundry detergent", "Bin bags", "Sponges"]
+    }
+  ]
+}

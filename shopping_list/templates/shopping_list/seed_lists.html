@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block content %}
+<div class="container py-3">
+  {% for message in messages %}
+  <div class="alert alert-{{ message.tags }}" role="status">{{ message }}</div>
+  {% endfor %}
+  <h1 class="h3">Product catalogue starters</h1>
+  <p>Choose an English-language starting point for {{ request.family.name }}'s
+    product catalogue. These are suggestions: select only what you need.</p>
+  <p>Each selected product is added to your product catalogue, ready to add to
+    your shopping list afterwards from the Products page. Products whose name
+    exactly matches an existing catalogue product are reused, not duplicated.
+    This never changes your shopping list: no items, quantities, baskets,
+    purchases or cancellations are affected.</p>
+
+  {% if not review %}
+  <form method="get" class="mb-4">
+    <label for="seed-list" class="form-label">Choose a seed list</label>
+    <div class="d-flex flex-wrap gap-2">
+      <select id="seed-list" name="seed" class="form-select w-auto mw-100">
+        {% for id, option in seeds.items %}
+        <option value="{{ id }}" {% if id == seed_id %}selected{% endif %}>{{ option.name }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn btn-outline-primary">Show products</button>
+    </div>
+  </form>
+  {% endif %}
+
+  <h2 class="h4">{{ seed.name }}</h2>
+  {% if review %}<h3 class="h5">Review your selection</h3>{% endif %}
+  <form method="post" {% if not review %}id="seed-selection-form"{% endif %}>
+    {% csrf_token %}
+    <input type="hidden" name="seed" value="{{ seed_id }}">
+    {% if form.errors %}
+    <div class="alert alert-danger" role="alert">
+      {{ form.non_field_errors }}
+      {{ form.products.errors }}
+    </div>
+    {% endif %}
+
+    {% if not review %}
+    <div class="form-check my-3">
+      <input type="checkbox" class="form-check-input" id="seed-all" data-seed-all checked>
+      <label class="form-check-label fw-bold" for="seed-all">Select all products</label>
+    </div>
+    <p id="seed-selection-count" role="status" aria-live="polite">Selected products: {{ selected_names|length }}</p>
+    <noscript><p>Check products individually; the select-all controls require JavaScript.</p></noscript>
+    {% endif %}
+
+    <div class="row">
+      {% for category in categories %}
+      <fieldset class="col-12 col-md-6 col-lg-4 mb-3" data-seed-category-group>
+        <legend class="h5">
+          {% if review %}
+          {{ category.name }}
+          {% else %}
+          <input type="checkbox" class="form-check-input" id="seed-category-{{ forloop.counter }}" data-seed-category>
+          <label for="seed-category-{{ forloop.counter }}">{{ category.name }}</label>
+          {% endif %}
+        </legend>
+        {% for name in category.products %}
+          {% if review %}
+          <input type="hidden" name="products" value="{{ name }}">
+          <p class="mb-1">{{ name }}</p>
+          {% else %}
+          <div class="form-check mb-2">
+            <input type="checkbox" class="form-check-input" name="products" value="{{ name }}"
+              id="seed-product-{{ forloop.parentloop.counter }}-{{ forloop.counter }}"
+              data-seed-product {% if name in selected_names %}checked{% endif %}>
+            <label class="form-check-label" for="seed-product-{{ forloop.parentloop.counter }}-{{ forloop.counter }}">{{ name }}</label>
+          </div>
+          {% endif %}
+        {% endfor %}
+      </fieldset>
+      {% empty %}
+      <p>No products selected. Nothing will be added.</p>
+      {% endfor %}
+    </div>
+
+    <div class="d-flex flex-wrap gap-2 my-3">
+      {% if review %}
+      <button type="submit" name="action" value="edit" class="btn btn-outline-primary">Edit selection</button>
+      <button type="submit" name="action" value="import" class="btn btn-primary">Add to product catalogue</button>
+      {% else %}
+      <button type="submit" name="action" value="review" class="btn btn-primary">Review selection</button>
+      {% endif %}
+      <a href="{% url 'product_list' family_slug=request.family.slug %}" class="btn btn-outline-secondary">Back to products</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{{ block.super }}
+{% if not review %}
+<script src="{% static 'shopping_list/seed_selection.js' %}" defer></script>
+{% endif %}
+{% endblock %}

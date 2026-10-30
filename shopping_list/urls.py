@@ -1,9 +1,11 @@
 from . import views
+from .seed_views import SeedListView
 from django.urls import path
 
 
 urlpatterns = [
     path('shopping-list/', views.ShoppingListView.as_view(), name='shopping_list'), # noqa
+    path('seed-lists/', SeedListView.as_view(), name='seed_lists'),
     path('list-item-<slug:slug>/', views.ListItemView.as_view(), name='list_item'),  # noqa
     path('add-to-shopping-list/', views.AddToShoppingListView.as_view(), name='add_to_shopping_list'),  # noqa
     path('resolve-shopping-list-duplicate/', views.ResolveShoppingListDuplicateView.as_view(), name='resolve_shopping_list_duplicate'),  # noqa

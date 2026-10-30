@@ -1,0 +1,52 @@
+{
+  "name": "Everyday groceries for an older Irish couple",
+  "categories": [
+    {
+      "name": "Vegetables",
+      "products": [
+        "Potatoes", "Onions", "Carrots", "Broccoli", "Chives",
+        "Mushrooms", "Cabbage", "Turnip", "Leeks"
+      ]
+    },
+    {
+      "name": "Fruit",
+      "products": ["Apples", "Bananas", "Oranges", "Pears"]
+    },
+    {
+      "name": "Bread and Bakery",
+      "products": ["Brown bread", "Soda bread", "Sliced bread"]
+    },
+    {
+      "name": "Dairy and Eggs",
+      "products": ["Milk", "Butter", "Cheddar cheese", "Eggs", "Natural yoghurt"]
+    },
+    {
+      "name": "Meat and Fish",
+      "products": ["Chicken fillets", "Beef mince", "Stewing beef", "Cod fillets", "Tinned salmon"]
+    },
+    {
+      "name": "Cupboard Staples",
+      "products": [
+        "Porridge oats", "Wheat biscuits", "Rice", "Pasta", "Baked beans",
+        "Tinned tomatoes", "Tinned soup", "Red lentils", "Stock cubes",
+        "Flour", "Sugar", "Vegetable oil", "Marmalade"
+      ]
+    },
+    {
+      "name": "Frozen Food",
+      "products": ["Frozen peas", "Frozen mixed vegetables"]
+    },
+    {
+      "name": "Snacks",
+      "products": ["Oat biscuits", "Crackers"]
+    },
+    {
+      "name": "Tea, Coffee and Drinks",
+      "products": ["Tea bags", "Instant coffee", "Orange juice"]
+    },
+    {
+      "name": "Household Essentials",
+      "products": ["Toilet paper", "Kitchen roll", "Washing-up liquid", "Laundry detergent", "Bin bags"]
+    }
+  ]
+}
