@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container py-3">
+  {% if messages %}
+  {% for message in messages %}
+  <div class="alert alert-{{ message.tags }}" role="status">{{ message }}</div>
+  {% endfor %}
+  {% endif %}
+
+  <h1 class="h3">Family members</h1>
+  <p class="text-muted">
+    Administrators always have full access. A family must always keep at
+    least one administrator.
+  </p>
+
+  {% for row in rows %}
+  <div class="card mb-3">
+    <div class="card-body">
+      <h2 class="h5 card-title">
+        {{ row.membership.display_name }}
+        {% if row.membership.is_family_admin %}
+        <span class="badge bg-primary">Administrator</span>
+        {% endif %}
+        {% if row.is_sole_admin %}
+        <span class="badge bg-secondary">Only administrator</span>
+        {% endif %}
+      </h2>
+
+      <form method="post" action="{% url 'family_members' family_slug=request.family.slug %}" class="row g-2 align-items-center">
+        {% csrf_token %}
+        <input type="hidden" name="membership_id" value="{{ row.membership.pk }}">
+        <input type="hidden" name="action" value="update">
+
+        <div class="col-auto">
+          <label class="form-label" for="id_role_{{ row.membership.pk }}">Role</label>
+          {{ row.form.role }}
+        </div>
+
+        <div class="col-12">
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" name="can_add_list" id="can_add_list-{{ row.membership.pk }}" {% if row.membership.can_add_list %}checked{% endif %}>
+            <label class="form-check-label" for="can_add_list-{{ row.membership.pk }}">Add items to the shopping list</label>
+          </div>
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" name="can_remove_list" id="can_remove_list-{{ row.membership.pk }}" {% if row.membership.can_remove_list %}checked{% endif %}>
+            <label class="form-check-label" for="can_remove_list-{{ row.membership.pk }}">Remove items from the shopping list</label>
+          </div>
+        </div>
+        <div class="col-12">
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" name="can_add_catalogue" id="can_add_catalogue-{{ row.membership.pk }}" {% if row.membership.can_add_catalogue %}checked{% endif %}>
+            <label class="form-check-label" for="can_add_catalogue-{{ row.membership.pk }}">Add products to the catalogue</label>
+          </div>
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" name="can_remove_catalogue" id="can_remove_catalogue-{{ row.membership.pk }}" {% if row.membership.can_remove_catalogue %}checked{% endif %}>
+            <label class="form-check-label" for="can_remove_catalogue-{{ row.membership.pk }}">Remove products from the catalogue</label>
+          </div>
+        </div>
+        <div class="col-12">
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" name="can_add_shops" id="can_add_shops-{{ row.membership.pk }}" {% if row.membership.can_add_shops %}checked{% endif %}>
+            <label class="form-check-label" for="can_add_shops-{{ row.membership.pk }}">Add shops</label>
+          </div>
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" name="can_remove_shops" id="can_remove_shops-{{ row.membership.pk }}" {% if row.membership.can_remove_shops %}checked{% endif %}>
+            <label class="form-check-label" for="can_remove_shops-{{ row.membership.pk }}">Remove shops</label>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <button type="submit" class="btn btn-sm btn-primary">Save</button>
+        </div>
+      </form>
+
+      <form method="post" action="{% url 'family_members' family_slug=request.family.slug %}" class="mt-2" onsubmit="return confirm('Remove {{ row.membership.display_name }} from this family?');">
+        {% csrf_token %}
+        <input type="hidden" name="membership_id" value="{{ row.membership.pk }}">
+        <input type="hidden" name="action" value="remove">
+        <button type="submit" class="btn btn-sm btn-outline-danger">Remove from family</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

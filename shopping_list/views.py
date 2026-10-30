@@ -7,10 +7,13 @@ from .models import (
     Product,
     Shop,
     ShoppingList,
+    lock_family_for_membership_changes,
 )
-from .forms import CategoryForm, ProductForm, ShopForm
+from .forms import (
+    CategoryForm, MembershipPermissionsForm, ProductForm, ShopForm,
+)
 from .templatetags.custom_filters import member_display_name
-from utilities.utils import is_adult, is_family_admin
+from utilities.utils import is_family_admin, has_family_permission
 import logging
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -24,7 +27,6 @@ from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.contrib import messages
-from django.contrib.auth.mixins import UserPassesTestMixin
 from django.core.exceptions import PermissionDenied, ValidationError
 
 logger = logging.getLogger(__name__)
@@ -315,11 +317,6 @@ def broadcast_shopping_list_replaced(family, closed_list_id, new_list):
             "Failed to broadcast shopping list replaced for family %s",
             family.id,
         )
-
-
-class AdultRequiredMixin(UserPassesTestMixin):
-    def test_func(self):
-        return is_adult(self.request.user)
 
 
 # The two dimensions a shopping-list item can be grouped by, and the four
@@ -891,6 +888,21 @@ class ShoppingListView(FamilyMembershipRequiredMixin, View):
                 item, request, "This item has already been bought.",
             )
 
+        # Basket actions (add_to_basket/remove_from_basket) are governed
+        # purely by basket ownership, not by these six permissions, and
+        # are deliberately absent from this mapping.
+        required_permission = {
+            'add_unit': 'can_add_list',
+            'remove_unit': 'can_remove_list',
+            'cancel_final_unit': 'can_remove_list',
+            'cancel': 'can_remove_list',
+            'uncancel': 'can_remove_list',
+        }.get(action)
+        if required_permission and not has_family_permission(
+            request, required_permission,
+        ):
+            raise PermissionDenied
+
         if action == 'add_unit':
             if item.cancelled:
                 return HttpResponseBadRequest("Restore the cancelled unit first.")
@@ -1323,7 +1335,7 @@ class ProductDeleteView(FamilyMembershipRequiredMixin, View):
         product = get_object_or_404(
             Product, slug=slug, family=request.family,
         )
-        if not is_family_admin(request):
+        if not has_family_permission(request, 'can_remove_catalogue'):
             raise PermissionDenied
         product.current = False
         product.save()
@@ -1356,7 +1368,7 @@ class ShopDeleteView(FamilyMembershipRequiredMixin, View):
     def post(self, request, *args, **kwargs):
         slug = self.kwargs.get('slug')
         shop = get_object_or_404(Shop, slug=slug, family=request.family)
-        if not is_family_admin(request):
+        if not has_family_permission(request, 'can_remove_shops'):
             raise PermissionDenied
 
         affected_products = Product.objects.filter(
@@ -1461,6 +1473,8 @@ def _add_fresh_list_item(request, product):
 @method_decorator(login_required, name='dispatch')
 class AddToShoppingListView(FamilyMembershipRequiredMixin, View):
     def post(self, request, *args, **kwargs):
+        if not has_family_permission(request, 'can_add_list'):
+            raise PermissionDenied
         selected_products = request.POST.getlist('selected-products')
 
         products = Product.objects.filter(
@@ -1533,11 +1547,16 @@ class ResolveShoppingListDuplicateView(FamilyMembershipRequiredMixin, View):
                 )
 
                 if choice == 'increase_quantity':
+                    if not has_family_permission(request, 'can_add_list'):
+                        raise PermissionDenied(
+                            "You do not have permission to add to the "
+                            "shopping list."
+                        )
                     new_item, updated_item = self._increase_quantity(
                         request, product, existing_item,
                     )
                 else:
-                    if not is_family_admin(request):
+                    if not has_family_permission(request, 'can_add_catalogue'): # noqa
                         raise PermissionDenied(
                             "Ask a family admin to create a new product "
                             "variant."
@@ -1776,8 +1795,10 @@ class CloseShoppingListView(FamilyMembershipRequiredMixin, View):
 
 
 @method_decorator(login_required, name='dispatch')
-class AddProductView(FamilyMembershipRequiredMixin, AdultRequiredMixin, View):
+class AddProductView(FamilyMembershipRequiredMixin, View):
     def post(self, request, *args, **kwargs):
+        if not has_family_permission(request, 'can_add_catalogue'):
+            raise PermissionDenied
         form = ProductForm(request.POST, family=request.family)
         if form.is_valid():
             product = form.save(commit=False)
@@ -1792,8 +1813,10 @@ class AddProductView(FamilyMembershipRequiredMixin, AdultRequiredMixin, View):
 
 
 @method_decorator(login_required, name='dispatch')
-class AddShopView(FamilyMembershipRequiredMixin, AdultRequiredMixin, View):
+class AddShopView(FamilyMembershipRequiredMixin, View):
     def post(self, request, *args, **kwargs):
+        if not has_family_permission(request, 'can_add_shops'):
+            raise PermissionDenied
         form = ShopForm(request.POST, family=request.family)
         if form.is_valid():
             shop = form.save(commit=False)
@@ -1821,4 +1844,101 @@ class AddCategoryView(FamilyMembershipRequiredMixin, View):
         return redirect(
             'category_list', family_slug=request.family.slug,
         )
+
+
+@method_decorator(login_required, name='dispatch')
+class FamilyMembersView(FamilyMembershipRequiredMixin, View):
+    """The smallest coherent interface for a family administrator to see
+    every member of the current family and change an ordinary member's
+    role and six permissions, or remove a membership. Administrators
+    always have full authority regardless of the six flags - the
+    checkboxes only matter for non-admin rows. The "every family keeps at
+    least one administrator" invariant is enforced by
+    FamilyMembership.save()/delete() itself (see models.py), so it
+    applies here, to any other caller of those methods, and even to a
+    direct Django-admin edit/delete of a membership; this view only adds
+    the surrounding family-row lock for proper concurrency protection and
+    a friendly error message. Restricted entirely to family admins: there
+    is no read-only variant for ordinary members."""
+
+    def get(self, request, *args, **kwargs):
+        if not is_family_admin(request):
+            raise PermissionDenied
+        memberships = list(FamilyMembership.objects.filter(
+            family=request.family,
+        ).select_related('user').order_by('date_joined', 'pk'))
+        admin_count = sum(1 for m in memberships if m.is_family_admin)
+        rows = [
+            {
+                'membership': membership,
+                'form': MembershipPermissionsForm(
+                    instance=membership,
+                    auto_id=f'id_%s_{membership.pk}',
+                ),
+                'is_sole_admin': (
+                    membership.is_family_admin and admin_count == 1
+                ),
+            }
+            for membership in memberships
+        ]
+        return render(request, 'shopping_list/family_members.html', {
+            'rows': rows,
+        })
+
+    def post(self, request, *args, **kwargs):
+        if not is_family_admin(request):
+            raise PermissionDenied
+
+        action = request.POST.get('action')
+        membership_id = request.POST.get('membership_id')
+
+        with transaction.atomic():
+            # Locking the family row serialises this against any other
+            # concurrent role-change/removal request for the same
+            # family - including a Django-admin edit/delete, which takes
+            # the same lock (see FamilyMembershipAdmin) - so two
+            # operations can't both pass the "another admin remains"
+            # check and leave zero.
+            lock_family_for_membership_changes(request.family.pk)
+            membership = get_object_or_404(
+                FamilyMembership.objects.select_for_update(),
+                pk=membership_id, family=request.family,
+            )
+
+            if action == 'remove':
+                display_name = membership.display_name
+                try:
+                    membership.delete()
+                    messages.success(
+                        request, f"Removed {display_name} from the family.",
+                    )
+                except ValidationError as error:
+                    messages.error(request, "; ".join(error.messages))
+            elif action == 'update':
+                form = MembershipPermissionsForm(
+                    request.POST, instance=membership,
+                )
+                if form.is_valid():
+                    try:
+                        form.save()
+                        messages.success(
+                            request,
+                            f"Updated settings for "
+                            f"{membership.display_name}.",
+                        )
+                    except ValidationError as error:
+                        messages.error(request, "; ".join(error.messages))
+                else:
+                    error_text = "; ".join(
+                        msg for msgs in form.errors.values() for msg in msgs
+                    )
+                    messages.error(
+                        request,
+                        error_text or "Could not update that member's "
+                        "settings.",
+                    )
+            else:
+                return HttpResponseBadRequest("Unknown action.")
+
+        return redirect('family_members', family_slug=request.family.slug)
 

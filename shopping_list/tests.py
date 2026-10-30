@@ -1,10 +1,11 @@
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connections, transaction
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
 from types import SimpleNamespace
+import threading
 
 from asgiref.sync import sync_to_async
 from channels.testing import WebsocketCommunicator
@@ -25,6 +26,7 @@ from .models import (
     Product,
     Shop,
     ShoppingList,
+    lock_family_for_membership_changes,
 )
 
 
@@ -3646,6 +3648,729 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
         })
 
         self.assertEqual(response.status_code, 400)
+
+
+class FamilyMembershipPermissionsTests(TwoFamilyTestCase):
+    """Covers the six granular FamilyMembership permissions and the
+    always-full admin authority that overrides them. Direct client.post
+    calls throughout (not UI interaction), so every "denied" assertion
+    here also demonstrates that a direct bypass attempt is rejected, not
+    merely hidden in the UI."""
+
+    def _set_member_a_flags(self, **flags):
+        FamilyMembership.objects.filter(
+            family=self.family_a, user=self.member_a,
+        ).update(**flags)
+
+    def test_six_permission_fields_have_correct_defaults(self):
+        user = User.objects.create_user(username="fresh_member")
+        membership = FamilyMembership.objects.create(
+            family=self.family_a, user=user, display_name="Fresh Member",
+        )
+        # can_add_list/can_remove_list preserve ordinary members'
+        # pre-existing, unrestricted shopping-list access.
+        for field in ("can_add_list", "can_remove_list"):
+            self.assertTrue(getattr(membership, field), field)
+        # The catalogue/shop flags default False: those operations were
+        # admin-only before this feature existed, so a new member must
+        # not gain them automatically.
+        for field in (
+            "can_add_catalogue", "can_remove_catalogue",
+            "can_add_shops", "can_remove_shops",
+        ):
+            self.assertFalse(getattr(membership, field), field)
+
+    def test_existing_membership_retains_shopping_list_access(self):
+        # member_a comes from the base fixture with no explicit flags:
+        # the migration's default=True must mean they can still add to
+        # and remove from the shopping list, exactly as before this
+        # feature existed.
+        self.client.force_login(self.member_a)
+        fresh_product = Product.objects.create(
+            product_name="Fresh Product A", family=self.family_a,
+            category=self.category_a, default_shop=self.shop_a,
+            creator=self.admin_a,
+        )
+
+        add_response = self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [fresh_product.id],
+        })
+        self.assertRedirects(add_response, self.url_a("shopping_list"))
+
+        cancel_response = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "cancel",
+        })
+        self.assertEqual(cancel_response.status_code, 200)
+        self.list_item_a.refresh_from_db()
+        self.assertTrue(self.list_item_a.cancelled)
+
+    def test_can_add_list_allows_and_denies_adding_to_shopping_list(self):
+        fresh_product = Product.objects.create(
+            product_name="Gate Add List Product", family=self.family_a,
+            category=self.category_a, default_shop=self.shop_a,
+            creator=self.admin_a,
+        )
+        self._set_member_a_flags(can_add_list=False)
+        self.client.force_login(self.member_a)
+
+        denied = self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [fresh_product.id],
+        })
+        self.assertEqual(denied.status_code, 403)
+        self.assertFalse(ListItem.objects.filter(
+            family=self.family_a, product=fresh_product,
+        ).exists())
+
+        self._set_member_a_flags(can_add_list=True)
+        allowed = self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [fresh_product.id],
+        })
+        self.assertRedirects(allowed, self.url_a("shopping_list"))
+        self.assertTrue(ListItem.objects.filter(
+            family=self.family_a, product=fresh_product,
+        ).exists())
+
+    def test_can_remove_list_allows_and_denies_removing_from_shopping_list(self): # noqa
+        self._set_member_a_flags(can_remove_list=False)
+        self.client.force_login(self.member_a)
+
+        denied = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "cancel",
+        })
+        self.assertEqual(denied.status_code, 403)
+        self.list_item_a.refresh_from_db()
+        self.assertFalse(self.list_item_a.cancelled)
+
+        self._set_member_a_flags(can_remove_list=True)
+        allowed = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "cancel",
+        })
+        self.assertEqual(allowed.status_code, 200)
+        self.list_item_a.refresh_from_db()
+        self.assertTrue(self.list_item_a.cancelled)
+
+    def test_can_add_catalogue_allows_and_denies_adding_product(self):
+        self._set_member_a_flags(can_add_catalogue=False)
+        self.client.force_login(self.member_a)
+
+        denied = self.client.post(self.url_a("add_product"), {
+            "product_name": "Gated Product", "category": self.category_a.pk,
+            "default_shop": self.shop_a.pk, "default_quantity": 1,
+            "default_unit": "item",
+        })
+        self.assertEqual(denied.status_code, 403)
+        self.assertFalse(Product.objects.filter(
+            family=self.family_a, product_name="Gated Product",
+        ).exists())
+
+        self._set_member_a_flags(can_add_catalogue=True)
+        allowed = self.client.post(self.url_a("add_product"), {
+            "product_name": "Gated Product", "category": self.category_a.pk,
+            "default_shop": self.shop_a.pk, "default_quantity": 1,
+            "default_unit": "item",
+        })
+        self.assertRedirects(allowed, self.url_a("product_list"))
+        self.assertTrue(Product.objects.filter(
+            family=self.family_a, product_name="Gated Product",
+        ).exists())
+
+    def test_can_remove_catalogue_allows_and_denies_deactivating_product(self): # noqa
+        self._set_member_a_flags(can_remove_catalogue=False)
+        self.client.force_login(self.member_a)
+
+        denied = self.client.post(
+            self.url_a("product_delete", slug=self.product_a.slug),
+        )
+        self.assertEqual(denied.status_code, 403)
+        self.product_a.refresh_from_db()
+        self.assertTrue(self.product_a.current)
+
+        self._set_member_a_flags(can_remove_catalogue=True)
+        allowed = self.client.post(
+            self.url_a("product_delete", slug=self.product_a.slug),
+        )
+        self.assertRedirects(allowed, self.url_a("product_list"))
+        self.product_a.refresh_from_db()
+        self.assertFalse(self.product_a.current)
+
+    def test_can_add_shops_allows_and_denies_adding_shop(self):
+        self._set_member_a_flags(can_add_shops=False)
+        self.client.force_login(self.member_a)
+
+        denied = self.client.post(self.url_a("add_shop"), {
+            "shop_name": "Gated Shop", "type_of_shop": 1,
+        })
+        self.assertEqual(denied.status_code, 403)
+        self.assertFalse(Shop.objects.filter(
+            family=self.family_a, shop_name="Gated Shop",
+        ).exists())
+
+        self._set_member_a_flags(can_add_shops=True)
+        allowed = self.client.post(self.url_a("add_shop"), {
+            "shop_name": "Gated Shop", "type_of_shop": 1,
+        })
+        self.assertRedirects(allowed, self.url_a("shop_list"))
+        self.assertTrue(Shop.objects.filter(
+            family=self.family_a, shop_name="Gated Shop",
+        ).exists())
+
+    def test_can_remove_shops_allows_and_denies_deleting_shop(self):
+        other_shop = Shop.objects.create(
+            shop_name="Gated Removable Shop", type_of_shop=1,
+            family=self.family_a, creator=self.admin_a,
+        )
+        self._set_member_a_flags(can_remove_shops=False)
+        self.client.force_login(self.member_a)
+
+        denied = self.client.post(
+            self.url_a("shop_delete", slug=other_shop.slug),
+        )
+        self.assertEqual(denied.status_code, 403)
+        other_shop.refresh_from_db()
+        self.assertTrue(other_shop.current)
+
+        self._set_member_a_flags(can_remove_shops=True)
+        allowed = self.client.post(
+            self.url_a("shop_delete", slug=other_shop.slug),
+        )
+        self.assertRedirects(allowed, self.url_a("shop_list"))
+        other_shop.refresh_from_db()
+        self.assertFalse(other_shop.current)
+
+    def test_admin_retains_full_access_with_all_six_flags_false(self):
+        FamilyMembership.objects.filter(
+            family=self.family_a, user=self.admin_a,
+        ).update(
+            can_add_list=False, can_remove_list=False,
+            can_add_catalogue=False, can_remove_catalogue=False,
+            can_add_shops=False, can_remove_shops=False,
+        )
+        self.client.force_login(self.admin_a)
+
+        add_product = self.client.post(self.url_a("add_product"), {
+            "product_name": "Admin Override Product",
+            "category": self.category_a.pk, "default_shop": self.shop_a.pk,
+            "default_quantity": 1, "default_unit": "item",
+        })
+        self.assertRedirects(add_product, self.url_a("product_list"))
+
+        add_shop = self.client.post(self.url_a("add_shop"), {
+            "shop_name": "Admin Override Shop", "type_of_shop": 1,
+        })
+        self.assertRedirects(add_shop, self.url_a("shop_list"))
+
+        cancel = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "cancel",
+        })
+        self.assertEqual(cancel.status_code, 200)
+
+    def test_catalogue_add_and_list_add_permissions_are_independent(self):
+        # can_add_catalogue=True must not grant can_add_list, and
+        # vice versa: creating a catalogue product and adding an
+        # existing product to the shopping list are governed separately.
+        fresh_product = Product.objects.create(
+            product_name="Independence Product", family=self.family_a,
+            category=self.category_a, default_shop=self.shop_a,
+            creator=self.admin_a,
+        )
+        self._set_member_a_flags(can_add_catalogue=True, can_add_list=False)
+        self.client.force_login(self.member_a)
+
+        list_add_denied = self.client.post(
+            self.url_a("add_to_shopping_list"),
+            {"selected-products": [fresh_product.id]},
+        )
+        self.assertEqual(list_add_denied.status_code, 403)
+
+        catalogue_add_allowed = self.client.post(self.url_a("add_product"), {
+            "product_name": "Independently Added Product",
+            "category": self.category_a.pk, "default_shop": self.shop_a.pk,
+            "default_quantity": 1, "default_unit": "item",
+        })
+        self.assertRedirects(
+            catalogue_add_allowed, self.url_a("product_list"),
+        )
+
+    def test_reading_and_authentication_available_with_all_flags_false(self):
+        self._set_member_a_flags(
+            can_add_list=False, can_remove_list=False,
+            can_add_catalogue=False, can_remove_catalogue=False,
+            can_add_shops=False, can_remove_shops=False,
+        )
+        self.client.force_login(self.member_a)
+
+        for url_name in (
+            "shopping_list", "product_list", "shop_list", "category_list",
+        ):
+            self.assertEqual(
+                self.client.get(self.url_a(url_name)).status_code, 200,
+                url_name,
+            )
+        self.assertEqual(
+            self.client.get(reverse("account_change_password")).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.post(reverse("account_logout")).status_code, 302,
+        )
+
+    def test_ordinary_member_cannot_alter_other_members_basket_ownership(self): # noqa
+        # can_remove_list must not extend to purchasing, returning, or
+        # otherwise taking ownership of another member's basket unit -
+        # that remains governed purely by basket-ownership rules.
+        self._set_member_a_flags(can_remove_list=True)
+        self.client.force_login(self.admin_a)
+        self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "add_to_basket",
+        })
+        self.list_item_a.refresh_from_db()
+        self.assertEqual(self.list_item_a.put_in_basket_by_id, self.admin_a.id) # noqa
+
+        self.client.force_login(self.member_a)
+        remove_from_basket = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "remove_from_basket",
+        })
+        self.assertEqual(remove_from_basket.status_code, 403)
+        self.list_item_a.refresh_from_db()
+        self.assertTrue(self.list_item_a.in_basket)
+        self.assertEqual(self.list_item_a.put_in_basket_by_id, self.admin_a.id) # noqa
+
+        # cancelling a basket item is already blocked for everyone,
+        # admins included (see the final report for this known gap).
+        cancel_basket_item = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "cancel",
+        })
+        self.assertEqual(cancel_basket_item.status_code, 400)
+        self.list_item_a.refresh_from_db()
+        self.assertFalse(self.list_item_a.cancelled)
+
+    def test_demoting_one_of_two_admins_is_allowed(self):
+        User.objects.create_user(username="second_admin_demote")
+        FamilyMembership.objects.create(
+            family=self.family_a, user=User.objects.get(
+                username="second_admin_demote",
+            ), role=FamilyMembership.Role.ADMIN,
+            display_name="Second Admin",
+        )
+
+        original_membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.admin_a,
+        )
+        original_membership.role = FamilyMembership.Role.MEMBER
+        original_membership.save(update_fields=["role"])
+
+        original_membership.refresh_from_db()
+        self.assertEqual(original_membership.role, FamilyMembership.Role.MEMBER) # noqa
+
+    def test_removing_one_of_two_admins_is_allowed(self):
+        second_admin = User.objects.create_user(username="second_admin_remove") # noqa
+        second_membership = FamilyMembership.objects.create(
+            family=self.family_a, user=second_admin,
+            role=FamilyMembership.Role.ADMIN, display_name="Second Admin",
+        )
+
+        second_membership.delete()
+
+        self.assertFalse(FamilyMembership.objects.filter(
+            pk=second_membership.pk,
+        ).exists())
+        # The original admin, untouched, is still there to keep the
+        # family administered.
+        self.assertTrue(FamilyMembership.objects.filter(
+            family=self.family_a, user=self.admin_a,
+            role=FamilyMembership.Role.ADMIN,
+        ).exists())
+
+    def test_demoting_or_removing_the_last_admin_is_rejected(self):
+        membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.admin_a,
+        )
+
+        membership.role = FamilyMembership.Role.MEMBER
+        with self.assertRaises(ValidationError):
+            membership.save(update_fields=["role"])
+        membership.refresh_from_db()
+        self.assertEqual(membership.role, FamilyMembership.Role.ADMIN)
+
+        with self.assertRaises(ValidationError):
+            membership.delete()
+        self.assertTrue(FamilyMembership.objects.filter(
+            pk=membership.pk,
+        ).exists())
+
+    def test_permission_checks_are_scoped_to_the_current_family(self):
+        # The SAME user has independent flags per family: a restriction
+        # in family_a must not bleed into family_b.
+        FamilyMembership.objects.create(
+            family=self.family_b, user=self.member_a,
+            display_name="Member A in Family B",
+            can_add_catalogue=True,
+        )
+        self._set_member_a_flags(can_add_catalogue=False)
+        self.client.force_login(self.member_a)
+
+        denied_in_a = self.client.post(self.url_a("add_product"), {
+            "product_name": "Scoped Product", "category": self.category_a.pk,
+            "default_shop": self.shop_a.pk, "default_quantity": 1,
+            "default_unit": "item",
+        })
+        self.assertEqual(denied_in_a.status_code, 403)
+
+        allowed_in_b = self.client.post(self.url_b("add_product"), {
+            "product_name": "Scoped Product", "category": self.category_b.pk,
+            "default_shop": self.shop_b.pk, "default_quantity": 1,
+            "default_unit": "item",
+        })
+        self.assertRedirects(allowed_in_b, self.url_b("product_list"))
+
+    def test_seed_import_requires_can_add_catalogue(self):
+        from .seed_lists import load_seed_lists
+
+        seed_id = next(iter(load_seed_lists()))
+        seed = load_seed_lists()[seed_id]
+        product_name = seed["categories"][0]["products"][0]
+
+        self._set_member_a_flags(can_add_catalogue=False)
+        self.client.force_login(self.member_a)
+
+        denied = self.client.post(self.url_a("seed_lists"), {
+            "seed": seed_id, "products": [product_name], "action": "import",
+        })
+        self.assertEqual(denied.status_code, 403)
+        self.assertFalse(Product.objects.filter(
+            family=self.family_a, product_name=product_name,
+        ).exists())
+
+
+class WebSocketMutationRejectionTests(
+    TwoFamilyFixtureMixin, TransactionTestCase,
+):
+    """WebSocket item #13 of the permissions test plan: the consumer
+    never acts on client payloads (see consumers.py's no-op receive()),
+    so there is no mutation entry point to bypass these permissions
+    through."""
+
+    async def test_websocket_cannot_perform_protected_mutations(self):
+        communicator = WebsocketCommunicator(
+            ShoppingConsumer.as_asgi(), ws_path(self.family_a),
+        )
+        communicator.scope["user"] = self.member_a
+        communicator.scope["url_route"] = {
+            "kwargs": {"family_slug": self.family_a.slug},
+        }
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+
+        # A crafted "mutation" payload sent over the socket must have no
+        # effect, since all mutations go through the HTTP views.
+        await communicator.send_json_to({
+            "action": "cancel", "item_id": self.list_item_a.id,
+        })
+        self.assertTrue(await communicator.receive_nothing(timeout=0.2))
+
+        item = await sync_to_async(ListItem.objects.get)(
+            pk=self.list_item_a.id,
+        )
+        self.assertFalse(item.cancelled)
+
+        await communicator.disconnect()
+
+
+class FamilyMembersViewTests(TwoFamilyTestCase):
+    """The minimal permission-management UI: FamilyMembersView."""
+
+    def test_admin_can_view_and_update_a_members_permissions(self):
+        self.client.force_login(self.admin_a)
+
+        page = self.client.get(self.url_a("family_members"))
+        self.assertEqual(page.status_code, 200)
+
+        member_membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.member_a,
+        )
+        response = self.client.post(self.url_a("family_members"), {
+            "membership_id": member_membership.pk, "action": "update",
+            "role": FamilyMembership.Role.MEMBER,
+            "can_add_catalogue": "on",
+        })
+        self.assertRedirects(response, self.url_a("family_members"))
+        member_membership.refresh_from_db()
+        self.assertTrue(member_membership.can_add_catalogue)
+        self.assertFalse(member_membership.can_add_list)
+
+    def test_admin_can_remove_a_member_via_the_view(self):
+        self.client.force_login(self.admin_a)
+        member_membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.member_a,
+        )
+
+        response = self.client.post(self.url_a("family_members"), {
+            "membership_id": member_membership.pk, "action": "remove",
+        })
+
+        self.assertRedirects(response, self.url_a("family_members"))
+        self.assertFalse(FamilyMembership.objects.filter(
+            pk=member_membership.pk,
+        ).exists())
+
+    def test_non_admin_cannot_access_the_members_view(self):
+        self.client.force_login(self.member_a)
+
+        self.assertEqual(
+            self.client.get(self.url_a("family_members")).status_code, 403,
+        )
+        admin_membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.admin_a,
+        )
+        post_response = self.client.post(self.url_a("family_members"), {
+            "membership_id": admin_membership.pk, "action": "remove",
+        })
+        self.assertEqual(post_response.status_code, 403)
+        self.assertTrue(FamilyMembership.objects.filter(
+            pk=admin_membership.pk,
+        ).exists())
+
+    def test_view_rejects_demoting_or_removing_the_last_admin(self):
+        self.client.force_login(self.admin_a)
+        admin_membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.admin_a,
+        )
+
+        demote_response = self.client.post(self.url_a("family_members"), {
+            "membership_id": admin_membership.pk, "action": "update",
+            "role": FamilyMembership.Role.MEMBER,
+        })
+        self.assertRedirects(demote_response, self.url_a("family_members"))
+        admin_membership.refresh_from_db()
+        self.assertEqual(
+            admin_membership.role, FamilyMembership.Role.ADMIN,
+        )
+
+        remove_response = self.client.post(self.url_a("family_members"), {
+            "membership_id": admin_membership.pk, "action": "remove",
+        })
+        self.assertRedirects(remove_response, self.url_a("family_members"))
+        self.assertTrue(FamilyMembership.objects.filter(
+            pk=admin_membership.pk,
+        ).exists())
+
+    def test_view_rejects_a_membership_id_from_another_family(self):
+        self.client.force_login(self.admin_a)
+        other_family_membership = FamilyMembership.objects.get(
+            family=self.family_b, user=self.admin_b,
+        )
+
+        response = self.client.post(self.url_a("family_members"), {
+            "membership_id": other_family_membership.pk, "action": "remove",
+        })
+
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(FamilyMembership.objects.filter(
+            pk=other_family_membership.pk,
+        ).exists())
+
+
+class FamilyMembershipAdminLastAdminProtectionTests(TwoFamilyTestCase):
+    """Functional coverage, via the real Django admin HTTP views (not
+    just direct model calls), that the last-administrator invariant
+    reaches Django admin's single-object change/delete views and the
+    bulk "Delete selected" action - not just the custom
+    FamilyMembersView."""
+
+    def setUp(self):
+        super().setUp()
+        self.staff_user = User.objects.create_superuser(
+            username="admin_site_staff", email="staff@example.com",
+        )
+        self.client.force_login(self.staff_user)
+
+    def test_admin_change_form_rejects_demoting_the_last_admin(self):
+        membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.admin_a,
+        )
+        url = reverse(
+            "admin:shopping_list_familymembership_change",
+            args=[membership.pk],
+        )
+
+        response = self.client.post(url, {
+            "family": self.family_a.pk, "user": self.admin_a.pk,
+            "display_name": membership.display_name,
+            "role": FamilyMembership.Role.MEMBER,
+        })
+
+        # Django admin re-shows the form (200) rather than redirecting
+        # when the save is rejected by validation.
+        self.assertEqual(response.status_code, 200)
+        membership.refresh_from_db()
+        self.assertEqual(membership.role, FamilyMembership.Role.ADMIN)
+
+    def test_admin_delete_view_rejects_removing_the_last_admin(self):
+        membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.admin_a,
+        )
+        url = reverse(
+            "admin:shopping_list_familymembership_delete",
+            args=[membership.pk],
+        )
+
+        # Django admin's delete confirmation view has no built-in
+        # handling for a ValidationError raised during delete (unlike
+        # form validation, which is caught and redisplayed) - it
+        # propagates, which Django's test client re-raises here. The
+        # membership is still correctly protected; the known UX
+        # limitation (no friendly admin-site message) is documented in
+        # the final report rather than worked around with new scope.
+        with self.assertRaises(ValidationError):
+            self.client.post(url, {"post": "yes"})
+        self.assertTrue(FamilyMembership.objects.filter(
+            pk=membership.pk,
+        ).exists())
+
+    def test_admin_bulk_delete_action_rejects_removing_the_last_admin(self):
+        membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.admin_a,
+        )
+        url = reverse("admin:shopping_list_familymembership_changelist")
+
+        with self.assertRaises(ValidationError):
+            self.client.post(url, {
+                "action": "delete_selected",
+                "_selected_action": [membership.pk],
+                "post": "yes",
+            })
+        self.assertTrue(FamilyMembership.objects.filter(
+            pk=membership.pk,
+        ).exists())
+
+    def test_admin_change_form_allows_demoting_when_another_admin_remains(self): # noqa
+        second_admin = User.objects.create_user(
+            username="admin_site_second_admin",
+        )
+        FamilyMembership.objects.create(
+            family=self.family_a, user=second_admin,
+            role=FamilyMembership.Role.ADMIN, display_name="Second Admin",
+        )
+        membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.admin_a,
+        )
+        url = reverse(
+            "admin:shopping_list_familymembership_change",
+            args=[membership.pk],
+        )
+
+        response = self.client.post(url, {
+            "family": self.family_a.pk, "user": self.admin_a.pk,
+            "display_name": membership.display_name,
+            "role": FamilyMembership.Role.MEMBER,
+        })
+
+        self.assertRedirects(
+            response,
+            reverse("admin:shopping_list_familymembership_changelist"),
+        )
+        membership.refresh_from_db()
+        self.assertEqual(membership.role, FamilyMembership.Role.MEMBER)
+
+
+class LastAdministratorConcurrencyTests(TwoFamilyFixtureMixin, TransactionTestCase): # noqa
+    """Proves the family-row lock actually serialises two concurrent
+    attempts to change admin status for the SAME family, using two real
+    threads with independent DB connections (TransactionTestCase commits
+    for real, unlike TestCase's savepoint-wrapped tests, so this is the
+    only way to exercise genuine cross-connection blocking)."""
+
+    def test_concurrent_demotions_cannot_both_leave_the_family_adminless(self): # noqa
+        second_admin = User.objects.create_user(
+            username="concurrent_second_admin",
+        )
+        FamilyMembership.objects.create(
+            family=self.family_a, user=second_admin,
+            role=FamilyMembership.Role.ADMIN, display_name="Second Admin",
+        )
+        first_membership_id = FamilyMembership.objects.get(
+            family=self.family_a, user=self.admin_a,
+        ).pk
+        second_membership_id = FamilyMembership.objects.get(
+            family=self.family_a, user=second_admin,
+        ).pk
+
+        # Synchronises the two threads so the ordering below is
+        # deterministic rather than a timing gamble: thread two only
+        # attempts its own lock once thread one confirms it is already
+        # holding the family row, and thread one only commits (releasing
+        # the lock) once thread two confirms it has started waiting.
+        first_thread_has_lock = threading.Event()
+        second_thread_is_waiting = threading.Event()
+        release_first_thread = threading.Event()
+        second_thread_outcome = {}
+
+        def demote_first_admin():
+            connections.close_all()
+            try:
+                with transaction.atomic():
+                    lock_family_for_membership_changes(self.family_a.pk)
+                    first_thread_has_lock.set()
+                    # Give the second thread a bounded window to actually
+                    # start blocking on the same row lock before this
+                    # thread proceeds to commit.
+                    second_thread_is_waiting.wait(timeout=5)
+                    release_first_thread.wait(timeout=5)
+                    membership = FamilyMembership.objects.get(
+                        pk=first_membership_id,
+                    )
+                    membership.role = FamilyMembership.Role.MEMBER
+                    membership.save(update_fields=["role"])
+            finally:
+                connections.close_all()
+
+        def demote_second_admin():
+            connections.close_all()
+            try:
+                first_thread_has_lock.wait(timeout=5)
+                second_thread_is_waiting.set()
+                # This blocks on Postgres's row lock until thread one's
+                # transaction commits - the actual behaviour under test.
+                with transaction.atomic():
+                    lock_family_for_membership_changes(self.family_a.pk)
+                    membership = FamilyMembership.objects.get(
+                        pk=second_membership_id,
+                    )
+                    membership.role = FamilyMembership.Role.MEMBER
+                    membership.save(update_fields=["role"])
+                second_thread_outcome["succeeded"] = True
+            except ValidationError:
+                second_thread_outcome["succeeded"] = False
+            finally:
+                connections.close_all()
+
+        first_thread = threading.Thread(target=demote_first_admin)
+        second_thread = threading.Thread(target=demote_second_admin)
+
+        first_thread.start()
+        second_thread.start()
+        first_thread_has_lock.wait(timeout=5)
+        second_thread_is_waiting.wait(timeout=5)
+        release_first_thread.set()
+
+        first_thread.join(timeout=10)
+        second_thread.join(timeout=10)
+
+        self.assertFalse(first_thread.is_alive())
+        self.assertFalse(second_thread.is_alive())
+        # Thread one's demotion (while second_admin was still an admin)
+        # must have succeeded; thread two's demotion (by then the only
+        # remaining admin) must have been rejected by the invariant -
+        # exactly the outcome the lock exists to guarantee.
+        self.assertIn("succeeded", second_thread_outcome)
+        self.assertFalse(second_thread_outcome["succeeded"])
+        self.assertEqual(FamilyMembership.objects.filter(
+            family=self.family_a, role=FamilyMembership.Role.ADMIN,
+        ).count(), 1)
+        self.assertTrue(FamilyMembership.objects.filter(
+            family=self.family_a, user=second_admin,
+            role=FamilyMembership.Role.ADMIN,
+        ).exists())
 
 
 class ShoppingListLifecycleWebSocketTests(

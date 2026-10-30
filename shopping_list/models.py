@@ -68,6 +68,24 @@ class FamilyMembership(models.Model):
     )
     date_joined = models.DateTimeField(auto_now_add=True)
 
+    # Six granular permissions for ordinary (non-admin) members. Admins
+    # always have full authority regardless of these flags (see
+    # utilities.utils.has_family_permission); they only gate ordinary
+    # members. can_add_list/can_remove_list default True, preserving
+    # existing ordinary members' current, unrestricted access to the
+    # shopping-list add/remove operations they already had. The
+    # catalogue/shop flags default False: those operations were
+    # admin-only before this feature existed, so a new/unconfigured
+    # ordinary member must not gain them automatically - an
+    # administrator has to opt a member in explicitly via the
+    # membership-management UI.
+    can_add_list = models.BooleanField(default=True)
+    can_remove_list = models.BooleanField(default=True)
+    can_add_catalogue = models.BooleanField(default=False)
+    can_remove_catalogue = models.BooleanField(default=False)
+    can_add_shops = models.BooleanField(default=False)
+    can_remove_shops = models.BooleanField(default=False)
+
     class Meta:
         constraints = [
             models.UniqueConstraint(
@@ -84,6 +102,19 @@ class FamilyMembership(models.Model):
     def is_family_admin(self):
         # Not to be confused with Django's is_staff/is_superuser.
         return self.role == self.Role.ADMIN
+
+    def _would_remove_last_admin(self):
+        """True if, given this instance's CURRENT (about to be persisted
+        or deleted) state, no other admin membership would remain for
+        its family. Callers that need to serialise this check against
+        concurrent requests must first lock the family row with
+        Family.objects.select_for_update(); this method only reads the
+        latest committed state, it does not itself lock anything."""
+        if not self.family_id:
+            return False
+        return not FamilyMembership.objects.filter(
+            family_id=self.family_id, role=self.Role.ADMIN,
+        ).exclude(pk=self.pk).exists()
 
     def clean(self):
         super().clean()
@@ -111,11 +142,68 @@ class FamilyMembership(models.Model):
                     ),
                 })
 
+        if self.pk and self.role != self.Role.ADMIN:
+            previous_role = FamilyMembership.objects.filter(
+                pk=self.pk,
+            ).values_list("role", flat=True).first()
+            if previous_role == self.Role.ADMIN and self._would_remove_last_admin(): # noqa
+                raise ValidationError({
+                    "role": (
+                        "A family must always have at least one "
+                        "administrator. Promote another member before "
+                        "removing this one's administrator role."
+                    ),
+                })
+
+    def save(self, *args, **kwargs):
+        # Belt-and-braces alongside clean(): this also catches role
+        # changes made without going through full_clean() (e.g. a raw
+        # ORM/admin save), so the invariant cannot be bypassed merely by
+        # skipping validation.
+        if self.pk:
+            previous_role = FamilyMembership.objects.filter(
+                pk=self.pk,
+            ).values_list("role", flat=True).first()
+            if (
+                previous_role == self.Role.ADMIN
+                and self.role != self.Role.ADMIN
+                and self._would_remove_last_admin()
+            ):
+                raise ValidationError(
+                    "A family must always have at least one "
+                    "administrator. Promote another member before "
+                    "removing this one's administrator role."
+                )
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        # clean() is not invoked for deletions, so the invariant is
+        # enforced here too - this is what protects a direct Django-admin
+        # or ORM deletion, not just the membership-management view.
+        if self.is_family_admin and self._would_remove_last_admin():
+            raise ValidationError(
+                "A family must always have at least one administrator. "
+                "Promote another member before removing this one."
+            )
+        super().delete(*args, **kwargs)
+
     def __str__(self):
         return (
             f"{self.display_name} \u2014 {self.family} "
             f"({self.get_role_display()})"
         )
+
+
+def lock_family_for_membership_changes(family_id):
+    """Acquires the row lock that every supported path for changing a
+    family's membership roles or removing a membership must take before
+    checking-and-mutating, so concurrent operations are serialised and
+    cannot both pass the "another administrator remains" check. Must be
+    called inside transaction.atomic(). Used consistently by
+    FamilyMembersView (the membership-management UI) and
+    FamilyMembershipAdmin (Django admin's single and bulk operations) -
+    see each call site for how the lock is used there."""
+    return Family.objects.select_for_update().get(pk=family_id)
 
 
 class PendingFamilyAdminRegistration(models.Model):

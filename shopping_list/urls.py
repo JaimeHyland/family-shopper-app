@@ -24,4 +24,5 @@ urlpatterns = [
     path('categories/<slug:slug>/', views.CategoryView.as_view(), name='category_detail'), # noqa
     path('categories/<slug:slug>/delete/', views.CategoryDeleteView.as_view(), name='category_delete'), # noqa
     path('add-category/', views.AddCategoryView.as_view(), name='add_category'), # noqa
+    path('members/', views.FamilyMembersView.as_view(), name='family_members'), # noqa
 ]

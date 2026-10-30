@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django.db import transaction
 from .models import (
     Category,
     Family,
@@ -7,6 +8,8 @@ from .models import (
     PendingFamilyAdminRegistration,
     Product,
     Shop,
+    ShoppingList,
+    lock_family_for_membership_changes,
 )
 
 
@@ -21,6 +24,37 @@ class FamilyMembershipAdmin(admin.ModelAdmin):
     list_filter = ('role', 'family')
     search_fields = ('display_name', 'user__username', 'family__name')
     readonly_fields = ('date_joined',)
+
+    def save_model(self, request, obj, form, change):
+        # Takes the same family-row lock as FamilyMembersView, so an
+        # admin-initiated role change is serialised against concurrent
+        # changes to the same family's memberships (whether made through
+        # the membership-management view or here).
+        with transaction.atomic():
+            lock_family_for_membership_changes(obj.family_id)
+            super().save_model(request, obj, form, change)
+
+    def delete_model(self, request, obj):
+        with transaction.atomic():
+            lock_family_for_membership_changes(obj.family_id)
+            super().delete_model(request, obj)
+
+    def delete_queryset(self, request, queryset):
+        # QuerySet.delete() bypasses each instance's overridden delete(),
+        # which is where the "every family keeps at least one
+        # administrator" invariant is enforced, so delete one at a time.
+        # Lock every distinct affected family first, in a fixed (pk)
+        # order, so a bulk "Delete selected" spanning several families
+        # can't deadlock against another concurrent operation locking
+        # the same families in a different order.
+        family_ids = sorted(set(
+            queryset.values_list("family_id", flat=True),
+        ))
+        with transaction.atomic():
+            for family_id in family_ids:
+                lock_family_for_membership_changes(family_id)
+            for membership in queryset:
+                membership.delete()
 
 
 class PendingFamilyAdminRegistrationAdmin(admin.ModelAdmin):
@@ -40,15 +74,15 @@ class PendingFamilyAdminRegistrationAdmin(admin.ModelAdmin):
 class ListItemAdmin(admin.ModelAdmin):
     # Display fields on admin/.../change page
     fields = (
-        'product', 'category', 'preferred_shop', 'in_basket', 'buyer',
-        'shop_bought', 'creator_notes', 'shopper_notes', 'cancelled',
-        'cancelled_by', 'date_cancelled', 'quantity_required',
-        'quantity_bought', 'current',
+        'product', 'shopping_list', 'category', 'preferred_shop',
+        'in_basket', 'buyer', 'shop_bought', 'creator_notes',
+        'shopper_notes', 'cancelled', 'cancelled_by', 'date_cancelled',
+        'quantity_required', 'quantity_bought', 'current',
     )
 
     readonly_fields = (
         'default_shop', 'date_bought', 'category',
-        'creator', 'date_created', 'creator'
+        'creator', 'date_created', 'creator', 'shopping_list',
     )
 
     def default_shop(self, obj):
@@ -62,11 +96,13 @@ class ListItemAdmin(admin.ModelAdmin):
 
     # Group ListItems by Product category and allow filtering
     list_display = (
-        'product', 'category', 'preferred_shop', 'in_basket', 'cancelled'
+        'product', 'shopping_list', 'category', 'preferred_shop',
+        'in_basket', 'cancelled',
     )
 
-    # Enable filtering by category (from Product model)
-    list_filter = ('product__category', 'preferred_shop')
+    # Enable filtering by category (from Product model) and by which
+    # shopping list (open vs historical/closed) an item belongs to.
+    list_filter = ('product__category', 'preferred_shop', 'shopping_list__status') # noqa
 
     # Order items by category and product
     def get_queryset(self, request):
@@ -86,10 +122,11 @@ class ListItemAdmin(admin.ModelAdmin):
 
 
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ('product_name', 'slug')
+    list_display = ('product_name', 'slug', 'based_on')
     fields = (
         'product_name', 'slug', 'category', 'default_quantity', 'default_unit',
-        'default_shop', 'creator', 'date_created', 'notes', 'current',
+        'default_shop', 'based_on', 'creator', 'date_created', 'notes',
+        'current',
         )
     readonly_fields = ('slug', 'date_created', 'creator',)
 
@@ -112,12 +149,23 @@ class CategoryAdmin(admin.ModelAdmin):
     readonly_fields = ('slug', 'family', 'date_created', 'creator',)
 
 
+class ShoppingListAdmin(admin.ModelAdmin):
+    list_display = (
+        'family', 'status', 'created_at', 'closed_at', 'closed_by',
+    )
+    list_filter = ('status', 'family')
+    readonly_fields = (
+        'family', 'created_at', 'created_by', 'closed_at', 'closed_by',
+    )
+
+
 admin.site.register(ListItem, ListItemAdmin)
 admin.site.register(Product, ProductAdmin)
 admin.site.register(Category, CategoryAdmin)
 admin.site.register(Shop, ShopAdmin)
 admin.site.register(Family, FamilyAdmin)
 admin.site.register(FamilyMembership, FamilyMembershipAdmin)
+admin.site.register(ShoppingList, ShoppingListAdmin)
 admin.site.register(
     PendingFamilyAdminRegistration, PendingFamilyAdminRegistrationAdmin,
 )

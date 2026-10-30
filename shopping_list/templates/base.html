@@ -84,6 +84,13 @@
                         <a class="nav-link" href="{% url 'family_chooser' %}">Switch family</a>
                     </li>
                     {% endif %}
+                    {% if request.family and request.family_membership.is_family_admin %}
+                    <li class="nav-item">
+                        {% url 'family_members' family_slug=request.family.slug as family_members_url %}
+                        <a class="nav-link {% if request.path == family_members_url %}active{% endif %}"
+                            aria-current="page" href="{{ family_members_url }}">Family members</a>
+                    </li>
+                    {% endif %}
                     {% if user.is_authenticated %}
                     <li class="nav-item dropdown">
                         <a class="nav-link dropdown-toggle" href="#" id="userAccountDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
