@@ -1,4 +1,4 @@
-from django.db import models
+from django.db import models, transaction
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.db.models.functions import Lower
@@ -136,6 +136,10 @@ class PendingFamilyAdminRegistration(models.Model):
     """
     email = models.EmailField()
     family_name = models.CharField(max_length=100)
+    # The applicant's own name, captured at request time so it survives
+    # through to completion (which may happen in a different browser/
+    # session, e.g. after clicking the emailed link on another device).
+    display_name = models.CharField(max_length=100, blank=True, default="")
     token_digest = models.CharField(max_length=64, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
@@ -316,6 +320,15 @@ class Product(models.Model):
         Shop, on_delete=models.SET_NULL, null=True, blank=True,
         related_name="default_where_to_buy",
     )
+    # Set when this product was created as a variant of another product
+    # (e.g. "Milk (organic)" based on "Milk"), via the shopping-list
+    # duplicate-product prompt. Left null for ordinary, non-variant
+    # products. SET_NULL on delete: losing the original must not take the
+    # variant down with it.
+    based_on = models.ForeignKey(
+        "self", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="variants",
+    )
     creator = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -393,6 +406,16 @@ class Product(models.Model):
                 "The default shop must belong to the same family as the product."
             )
 
+        if (
+            self.family_id
+            and self.based_on_id
+            and self.based_on.family_id != self.family_id
+        ):
+            errors["based_on"] = (
+                "The original product must belong to the same family as "
+                "the variant."
+            )
+
         if errors:
             raise ValidationError(errors)
 
@@ -408,7 +431,87 @@ class Product(models.Model):
         ]
 
 
+class ShoppingList(models.Model):
+    """
+    The lifecycle entity behind "a family's shopping list". A family has
+    at most one OPEN list at a time (enforced below with a database
+    constraint, not just application logic); closing it preserves its
+    ListItems as a historical record rather than deleting or mutating
+    them, and a fresh OPEN list is created to replace it.
+    """
+
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        CLOSED = "closed", "Closed"
+
+    family = models.ForeignKey(
+        Family, on_delete=models.CASCADE, related_name="shopping_lists",
+    )
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.OPEN,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+        blank=True, related_name="shopping_lists_created",
+    )
+    closed_at = models.DateTimeField(null=True, blank=True)
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True,
+        blank=True, related_name="shopping_lists_closed",
+    )
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            # The actual guarantee that a family can never have two open
+            # lists at once, even under concurrent requests: enforced by
+            # the database, not merely checked in application code.
+            models.UniqueConstraint(
+                fields=['family'],
+                condition=models.Q(status='open'),
+                name='unique_open_shopping_list_per_family',
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.family} \u2014 {self.get_status_display()} list "
+            f"({self.created_at:%Y-%m-%d})"
+        )
+
+    @classmethod
+    def get_or_create_open(cls, family, user=None):
+        """
+        Returns the family's open list, creating one if none currently
+        exists (e.g. a brand-new family, or just after closing one
+        without yet starting the next). The common case (one already
+        exists) never takes a lock; only the rare "none exists yet" path
+        does, with the unique-open-list database constraint as the final
+        backstop against a genuine race between two such lookups.
+        """
+        open_list = cls.objects.filter(
+            family=family, status=cls.Status.OPEN,
+        ).first()
+        if open_list is not None:
+            return open_list
+
+        with transaction.atomic():
+            locked_family = Family.objects.select_for_update().get(
+                pk=family.pk,
+            )
+            open_list = cls.objects.filter(
+                family=locked_family, status=cls.Status.OPEN,
+            ).first()
+            if open_list is not None:
+                return open_list
+            return cls.objects.create(family=locked_family, created_by=user)
+
+
 class ListItem(models.Model):
+    # Units of the same original request retain a common identity even
+    # when their owners/states differ or they are carried to a new list.
+    request_key = models.UUIDField(default=uuid.uuid4, db_index=True)
     product = models.ForeignKey(
         Product, on_delete=models.CASCADE, related_name="product_of_list_item"
     )
@@ -417,6 +520,14 @@ class ListItem(models.Model):
         Family,
         on_delete=models.CASCADE,
         related_name="list_items",
+    )
+    # The lifecycle list this item belongs to (open or closed). "current"
+    # below remains the field every existing query actually filters on
+    # (unchanged, for minimal disruption); it is kept in lockstep with
+    # shopping_list.status by the one place that closes a list, so
+    # "current=True" and "shopping_list.status == OPEN" never disagree.
+    shopping_list = models.ForeignKey(
+        ShoppingList, on_delete=models.CASCADE, related_name="items",
     )
     creator = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -463,6 +574,14 @@ class ListItem(models.Model):
         null=True,
         blank=True
     )
+    # Who most recently un-cancelled this item; cleared on cancel/buy.
+    restored_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        related_name="user_who_restored_item",
+        null=True,
+        blank=True,
+    )
     quantity_required = models.IntegerField(default=1)
     quantity_bought = models.IntegerField(default=0)
     shop_bought = models.ForeignKey(
@@ -481,6 +600,14 @@ class ListItem(models.Model):
         ordering = ['date_created']
         verbose_name = "list item"
         constraints = [
+            models.CheckConstraint(
+                condition=models.Q(quantity_required=1),
+                name='list_item_is_one_unit',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(quantity_bought__in=[0, 1]),
+                name='list_item_bought_at_most_one',
+            ),
             models.UniqueConstraint(
                 fields=['family', 'slug'],
                 name='unique_list_item_slug_per_family',
@@ -524,10 +651,27 @@ class ListItem(models.Model):
                 "same family as the list item."
             )
 
+        if (
+            self.family_id
+            and self.shopping_list_id
+            and self.shopping_list.family_id != self.family_id
+        ):
+            errors["shopping_list"] = (
+                "The shopping list must belong to the same family as the "
+                "list item."
+            )
+
         if errors:
             raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
+        if not self.shopping_list_id:
+            # Every ListItem belongs to some list; callers that don't
+            # care which one (the vast majority) get the family's open
+            # list, auto-created if none exists yet.
+            self.shopping_list = ShoppingList.get_or_create_open(
+                self.family, self.creator,
+            )
         if not self.preferred_shop and self.product.default_shop:
             self.preferred_shop = self.product.default_shop
         if not self.pk:

@@ -24,6 +24,7 @@ from .models import (
     ListItem,
     Product,
     Shop,
+    ShoppingList,
 )
 
 
@@ -43,6 +44,15 @@ def create_family_with_members(name, admin_username, member_usernames=()):
         )
         members.append(user)
     return family, admin, members
+
+
+def add_test_units(item, count):
+    values = {
+        field.attname: getattr(item, field.attname)
+        for field in ListItem._meta.concrete_fields
+        if field.name not in ('id', 'slug', 'date_created')
+    }
+    return [ListItem.objects.create(**values) for _ in range(count)]
 
 
 def family_url(family, name, **kwargs):
@@ -443,55 +453,46 @@ class CancelledInBasketExclusivityTests(TwoFamilyTestCase):
     be entered while the other already applies, and this must hold both
     for the initial page render and for the POST action handlers."""
 
-    # --- Page-load checkbox reconstruction ---
+    # --- Page-load unit controls ---
 
-    def test_cancelled_item_renders_with_in_basket_checkbox_disabled(self):
+    def test_cancelled_item_has_disabled_unit_controls(self):
         self.list_item_a.cancelled = True
         self.list_item_a.save()
+        self.client.force_login(self.member_a)
+        html = self.client.get(self.url_a("shopping_list")).content.decode()
+        row = html.split('data-state="cancelled"', 1)[1].split('</li>', 1)[0]
+        self.assertEqual(row.count('data-basket-action='), 4)
+        self.assertEqual(row.count('disabled aria-disabled="true"'), 4)
+        self.assertNotIn('name="cancelled_item"', html)
+        self.assertNotIn('cancel-chkbx', html)
 
-        self.client.login(username="member_a", password="pass1234")
-        response = self.client.get(self.url_a("shopping_list"))
-        html = response.content.decode()
-
-        completed_input_start = html.index(
-            f'name="completed_items" value="{self.list_item_a.id}"',
-        )
-        row_end = html.index('</li>', completed_input_start)
-        completed_input_markup = html[completed_input_start:row_end]
-        self.assertIn('disabled', completed_input_markup)
-
-    def test_in_basket_item_renders_with_cancelled_checkbox_disabled(self):
+    def test_in_basket_item_renders_without_cancelled_checkbox(self):
         self.list_item_a.in_basket = True
         self.list_item_a.put_in_basket_by = self.member_a
         self.list_item_a.save()
+        self.client.force_login(self.member_a)
+        html = self.client.get(self.url_a("shopping_list")).content.decode()
+        self.assertNotIn('name="cancelled_item"', html)
+        self.assertNotIn('cancel-chkbx', html)
+        row = html.split('data-state="in_basket"', 1)[1].split('</li>', 1)[0]
+        self.assertEqual(row.count('data-basket-action='), 4)
+        self.assertEqual(row.count('disabled aria-disabled="true"'), 2)
 
-        self.client.login(username="member_a", password="pass1234")
-        response = self.client.get(self.url_a("shopping_list"))
-        html = response.content.decode()
-
-        # The cancel checkbox for this item must be disabled.
-        cancel_input_start = html.index(
-            f'name="cancelled_item" value="{self.list_item_a.id}"',
-        )
-        completed_input_start = html.index(
-            'name="completed_items"', cancel_input_start,
-        )
-        cancel_input_markup = html[cancel_input_start:completed_input_start]
-        self.assertIn('disabled', cancel_input_markup)
-
-    def test_normal_item_renders_with_both_checkboxes_enabled(self):
-        self.client.login(username="member_a", password="pass1234")
-        response = self.client.get(self.url_a("shopping_list"))
-        html = response.content.decode()
-
-        cancel_input_start = html.index(
-            f'name="cancelled_item" value="{self.list_item_a.id}"',
-        )
-        completed_input_start = html.index(
-            'name="completed_items"', cancel_input_start,
-        )
-        row_markup = html[cancel_input_start:completed_input_start + 200]
-        self.assertNotIn('disabled', row_markup)
+    def test_normal_item_renders_without_cancelled_checkbox_and_plus_enabled(self):
+        self.client.force_login(self.member_a)
+        html = self.client.get(self.url_a("shopping_list")).content.decode()
+        self.assertNotIn('name="cancelled_item"', html)
+        self.assertNotIn('cancel-chkbx', html)
+        self.assertNotIn('toggleCancelUncancel', html)
+        row = html.split('data-state="ordinary"', 1)[1].split('</li>', 1)[0]
+        self.assertEqual(row.count('data-basket-action='), 4)
+        plus = row.split('data-basket-action="add_unit"', 1)[1].split('>', 1)[0]
+        self.assertNotIn('disabled', plus)
+        fragments = self.client.get(
+            self.url_a("shopping_list"), {"rows_only": "1"},
+        ).json()
+        self.assertNotIn('name="cancelled_item"', fragments["rows_html"])
+        self.assertNotIn('cancel-chkbx', fragments["rows_html"])
 
     # --- Backend state-transition enforcement ---
 
@@ -591,8 +592,8 @@ class BuyBasketTests(TwoFamilyTestCase):
         item.save()
 
     def test_buy_basket_marks_own_basket_items_as_bought_and_empties_basket(self): # noqa
-        self.list_item_a.quantity_required = 3
         self._put_in_basket(self.list_item_a, self.member_a)
+        add_test_units(self.list_item_a, 2)
 
         self.client.login(username="member_a", password="pass1234")
         before = timezone.now()
@@ -605,7 +606,8 @@ class BuyBasketTests(TwoFamilyTestCase):
         self.assertEqual(self.list_item_a.buyer, self.member_a)
         self.assertIsNotNone(self.list_item_a.date_bought)
         self.assertGreaterEqual(self.list_item_a.date_bought, before)
-        self.assertEqual(self.list_item_a.quantity_bought, 3)
+        self.assertEqual(self.list_item_a.quantity_bought, 1)
+        self.assertEqual(ListItem.objects.filter(product=self.product_a, buyer=self.member_a).count(), 3)
         self.assertEqual(self.list_item_a.shop_bought, self.list_item_a.preferred_shop) # noqa
         # The basket is emptied, but the item remains on the current list.
         self.assertFalse(self.list_item_a.in_basket)
@@ -846,6 +848,122 @@ class ShoppingListGroupingTests(TwoFamilyTestCase):
         groups = response.context["grouped_shopping_list"]
         self.assertEqual(groups[0]['label'], "No shop set")
         self.assertIn(self.butter_item, groups[0]['items'])
+
+
+class EmptyCategoryHeadingTests(TwoFamilyTestCase):
+    """Category/shop headings in the grouped shopping-list view. Empty
+    groups are already excluded server-side (group_shopping_list_items
+    only buckets labels that have at least one passed-in item); these
+    tests guard that, and the related "last item cancelled" case. A
+    cancelled item stays on the active list (see _active_list_items), so
+    its heading is still rendered here - just marked with
+    data-group-heading/cancelled-list-item so the client can hide it
+    while "Show cancelled items" is off (see the client-side test in
+    shopping_list/tests_unit_controls.js)."""
+
+    def setUp(self):
+        super().setUp()
+        self.empty_category = Category.objects.create(
+            category_name="Empty Category", family=self.family_a,
+            creator=self.admin_a,
+        )
+        # A catalogue product exists in this category, but nothing from
+        # it is on the shopping list - the category itself is untouched.
+        Product.objects.create(
+            product_name="Unlisted Product", family=self.family_a,
+            category=self.empty_category, creator=self.admin_a,
+        )
+
+    def test_category_with_items_is_displayed(self):
+        self.client.force_login(self.admin_a)
+        response = self.client.get(
+            self.url_a("shopping_list"), {"group_by": "category"},
+        )
+
+        labels = [g['label'] for g in response.context["grouped_shopping_list"]] # noqa
+        self.assertIn("Category A", labels)
+        self.assertContains(response, "Category A")
+
+    def test_category_with_no_displayed_items_has_no_heading(self):
+        self.client.force_login(self.admin_a)
+        response = self.client.get(
+            self.url_a("shopping_list"), {"group_by": "category"},
+        )
+
+        labels = [g['label'] for g in response.context["grouped_shopping_list"]] # noqa
+        self.assertNotIn("Empty Category", labels)
+        # "Empty Category" legitimately still appears in the filter
+        # sidebar (any current category can be filtered by); only its
+        # heading in the grouped list itself must be absent.
+        self.assertNotContains(
+            response,
+            '<li class="list-group-item bg-light fw-bold" '
+            'data-group-heading="primary">Empty Category</li>',
+        )
+        # Display-only: the category and its catalogue product remain.
+        self.empty_category.refresh_from_db()
+        self.assertTrue(self.empty_category.current)
+        self.assertTrue(Product.objects.filter(
+            family=self.family_a, category=self.empty_category, current=True,
+        ).exists())
+
+    def test_cancelling_the_last_displayed_item_marks_its_heading_for_client_side_hiding(self): # noqa
+        self.client.force_login(self.member_a)
+        category = Category.objects.create(
+            category_name="Disappearing", family=self.family_a,
+            creator=self.admin_a,
+        )
+        product = Product.objects.create(
+            product_name="Vanishing Product", family=self.family_a,
+            category=category, creator=self.admin_a,
+        )
+        item = ListItem.objects.create(
+            product=product, family=self.family_a, creator=self.member_a,
+        )
+
+        response = self.client.get(
+            self.url_a("shopping_list"), {"group_by": "category"},
+        )
+        self.assertContains(response, "Disappearing")
+
+        # The normal "remove" action on a product's only remaining unit:
+        # confirmation is required, then confirmed (soft cancel, not a
+        # hard delete - see ListItemView's final-unit handling).
+        conflict = self.client.post(self.url_a("shopping_list"), {
+            "item_id": item.pk, "action": "remove_unit",
+        })
+        self.assertEqual(conflict.status_code, 409)
+        confirmed = self.client.post(self.url_a("shopping_list"), {
+            "item_id": item.pk, "action": "cancel_final_unit",
+        })
+        self.assertEqual(confirmed.status_code, 200)
+        item.refresh_from_db()
+        self.assertTrue(item.cancelled)
+
+        heading_markup = (
+            '<li class="list-group-item bg-light fw-bold" '
+            'data-group-heading="primary">Disappearing</li>'
+        )
+        full_page = self.client.get(
+            self.url_a("shopping_list"), {"group_by": "category"},
+        )
+        self.assertContains(full_page, heading_markup)
+        self.assertContains(full_page, "cancelled-list-item")
+
+        # Realtime/WebSocket-driven refreshes use this same endpoint, so
+        # the client's syncGroupHeadingVisibility() sees the same markup.
+        live_refresh = self.client.get(self.url_a("shopping_list"), {
+            "group_by": "category", "rows_only": "1",
+        })
+        rows_html = live_refresh.json()["rows_html"]
+        self.assertIn(heading_markup, rows_html)
+        self.assertIn("cancelled-list-item", rows_html)
+
+        # The underlying category and product are untouched.
+        category.refresh_from_db()
+        product.refresh_from_db()
+        self.assertTrue(category.current)
+        self.assertTrue(product.current)
 
 
 class ShoppingListFilterTests(TwoFamilyTestCase):
@@ -1899,30 +2017,1802 @@ class BuyBasketWebSocketTests(TwoFamilyFixtureMixin, TransactionTestCase):
                 self.url_a("shopping_list"), {"action": "buy_basket"},
             )
 
+            # Two items were bought: each sends a list_item_update and a
+            # product_list_status (both for the same product here, since
+            # both basket items share product_a), plus one grouped
+            # basket_bought notification, plus one shopping_list_complete
+            # since buying both items (the list's only two) finishes it.
             messages = [
-                await communicator.receive_json_from() for _ in range(3)
+                await communicator.receive_json_from() for _ in range(6)
             ]
             item_messages = [
                 m for m in messages if m["type"] == "list_item_update"
             ]
+            status_messages = [
+                m for m in messages if m["type"] == "product_list_status"
+            ]
             basket_messages = [
                 m for m in messages if m["type"] == "basket_bought"
             ]
+            complete_messages = [
+                m for m in messages if m["type"] == "shopping_list_complete"
+            ]
 
-            # Two items were bought, but only one grouped notification is
-            # sent for the whole Buy My Basket operation.
             self.assertEqual(len(item_messages), 2)
             for message in item_messages:
                 self.assertTrue(message["bought"])
                 self.assertEqual(message["quantity_bought"], 1)
                 self.assertTrue(message["product_name"])
 
+            # Both bought items were the only active rows for product_a,
+            # so it drops out of the active list entirely.
+            self.assertEqual(len(status_messages), 2)
+            for message in status_messages:
+                self.assertEqual(message["product_id"], self.product_a.id)
+                self.assertIsNone(message["on_list_quantity"])
+
             self.assertEqual(len(basket_messages), 1)
             self.assertEqual(basket_messages[0]["item_count"], 2)
             self.assertEqual(basket_messages[0]["buyer_username"], "member_a")
 
+            self.assertEqual(len(complete_messages), 1)
+
             self.assertTrue(
                 await communicator.receive_nothing(timeout=0.2),
             )
+        finally:
+            await communicator.disconnect()
+
+
+class DuplicateProductPromptTests(TwoFamilyTestCase):
+    """Covers the "already on your shopping list" prompt: detecting a
+    product already on the active list, and the two resolution choices
+    (increase quantity / create a variant)."""
+
+    def _resolve(self, family, **data):
+        return self.client.post(
+            family_url(family, "resolve_shopping_list_duplicate"), data,
+        )
+
+    def test_adding_a_product_not_on_the_list_adds_it_normally(self):
+        new_product = Product.objects.create(
+            product_name="New Product", family=self.family_a,
+            category=self.category_a, default_shop=self.shop_a,
+            creator=self.admin_a,
+        )
+        self.client.force_login(self.member_a)
+        response = self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [new_product.id],
+        })
+
+        self.assertRedirects(response, self.url_a("shopping_list"))
+        self.assertTrue(
+            ListItem.objects.filter(
+                product=new_product, family=self.family_a,
+                current=True, date_bought__isnull=True,
+            ).exists(),
+        )
+
+    def test_adding_a_product_already_on_the_list_offers_a_choice(self):
+        # self.product_a is already on the list via self.list_item_a.
+        self.client.force_login(self.member_a)
+        response = self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [self.product_a.id],
+        })
+
+        self.assertRedirects(response, self.url_a("product_list"))
+        # No second ListItem was silently created.
+        self.assertEqual(
+            ListItem.objects.filter(
+                product=self.product_a, family=self.family_a,
+            ).count(),
+            1,
+        )
+
+        list_response = self.client.get(self.url_a("product_list"))
+        conflicts = list_response.context["duplicate_conflicts"]
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(conflicts[0]["product"], self.product_a)
+        self.assertEqual(conflicts[0]["existing_item"], self.list_item_a)
+
+    def test_increasing_quantity_creates_one_additional_unit(self):
+        self.client.force_login(self.member_a)
+        self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [self.product_a.id],
+        })
+
+        response = self._resolve(
+            self.family_a,
+            product_id=self.product_a.id, choice="increase_quantity",
+        )
+
+        self.assertRedirects(response, self.url_a("shopping_list"))
+        self.list_item_a.refresh_from_db()
+        self.assertEqual(self.list_item_a.quantity_required, 1)
+        self.assertEqual(
+            ListItem.objects.filter(
+                product=self.product_a, family=self.family_a,
+            ).count(),
+            2,
+        )
+
+    def test_creating_a_variant_preserves_original_and_adds_separate_item(self): # noqa
+        self.client.force_login(self.admin_a)
+        self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [self.product_a.id],
+        })
+
+        response = self._resolve(
+            self.family_a,
+            product_id=self.product_a.id, choice="create_variant",
+            variant_name="Product A (organic)",
+        )
+
+        self.assertRedirects(response, self.url_a("shopping_list"))
+        self.list_item_a.refresh_from_db()
+        self.assertEqual(self.list_item_a.quantity_required, 1)  # unchanged
+
+        variant = Product.objects.get(
+            product_name="Product A (organic)", family=self.family_a,
+        )
+        self.assertEqual(variant.based_on, self.product_a)
+        self.assertEqual(variant.category, self.product_a.category)
+        self.assertEqual(variant.default_shop, self.product_a.default_shop)
+
+        variant_item = ListItem.objects.get(
+            product=variant, family=self.family_a,
+        )
+        self.assertEqual(variant_item.quantity_required, 1)
+        # The original item is untouched, and both now coexist.
+        self.assertEqual(
+            ListItem.objects.filter(family=self.family_a, product__in=[
+                self.product_a, variant,
+            ]).count(),
+            2,
+        )
+
+    def test_non_adult_cannot_create_a_variant(self):
+        self.client.force_login(self.member_a)
+        self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [self.product_a.id],
+        })
+
+        response = self._resolve(
+            self.family_a,
+            product_id=self.product_a.id, choice="create_variant",
+            variant_name="Product A (organic)",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(
+            Product.objects.filter(
+                product_name="Product A (organic)",
+            ).exists(),
+        )
+
+    def test_dismissing_the_prompt_leaves_the_list_unchanged(self):
+        self.client.force_login(self.member_a)
+        self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [self.product_a.id],
+        })
+
+        response = self.client.post(
+            self.url_a("dismiss_shopping_list_duplicate"),
+            {"product_id": self.product_a.id},
+        )
+
+        self.assertRedirects(response, self.url_a("product_list"))
+        self.list_item_a.refresh_from_db()
+        self.assertEqual(self.list_item_a.quantity_required, 1)
+        self.assertEqual(
+            ListItem.objects.filter(
+                product=self.product_a, family=self.family_a,
+            ).count(),
+            1,
+        )
+        # The prompt does not reappear once dismissed.
+        list_response = self.client.get(self.url_a("product_list"))
+        self.assertEqual(list_response.context["duplicate_conflicts"], [])
+
+    def test_repeated_selection_of_the_same_product_is_consistent(self):
+        self.client.force_login(self.member_a)
+        for _ in range(3):
+            self.client.post(self.url_a("add_to_shopping_list"), {
+                "selected-products": [self.product_a.id],
+            })
+
+        # Still just the one pending conflict and the one original item.
+        list_response = self.client.get(self.url_a("product_list"))
+        self.assertEqual(
+            len(list_response.context["duplicate_conflicts"]), 1,
+        )
+        self.assertEqual(
+            ListItem.objects.filter(
+                product=self.product_a, family=self.family_a,
+            ).count(),
+            1,
+        )
+
+    def test_product_identity_is_by_id_not_by_name(self):
+        # A variant has its own identity: selecting it is never treated as
+        # a duplicate of the product it was based on, even though the two
+        # are related.
+        variant = Product.objects.create(
+            product_name="Product A Variant", family=self.family_a,
+            category=self.category_a, default_shop=self.shop_a,
+            creator=self.admin_a, based_on=self.product_a,
+        )
+
+        self.client.force_login(self.member_a)
+        response = self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [variant.id],
+        })
+
+        self.assertRedirects(response, self.url_a("shopping_list"))
+        self.assertTrue(
+            ListItem.objects.filter(
+                product=variant, family=self.family_a,
+            ).exists(),
+        )
+
+    def test_cancelled_item_still_counts_as_on_the_active_list(self):
+        # Cancelled items remain on the active shopping list view (just
+        # struck through), so re-selecting the product must still prompt
+        # rather than silently adding a second row.
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+
+        self.client.force_login(self.member_a)
+        self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [self.product_a.id],
+        })
+
+        list_response = self.client.get(self.url_a("product_list"))
+        self.assertEqual(
+            len(list_response.context["duplicate_conflicts"]), 1,
+        )
+
+    def test_bought_item_does_not_count_as_a_duplicate(self):
+        # A product whose only ListItem has already been bought is no
+        # longer "on the active list": re-adding it is a normal add.
+        self.list_item_a.date_bought = timezone.now()
+        self.list_item_a.quantity_bought = 1
+        self.list_item_a.save()
+
+        self.client.force_login(self.member_a)
+        response = self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [self.product_a.id],
+        })
+
+        self.assertRedirects(response, self.url_a("shopping_list"))
+        self.assertEqual(
+            ListItem.objects.filter(
+                product=self.product_a, family=self.family_a,
+                date_bought__isnull=True,
+            ).count(),
+            1,
+        )
+
+    def test_cross_family_product_id_in_resolve_returns_404(self):
+        self.client.force_login(self.member_a)
+        response = self._resolve(
+            self.family_a,
+            product_id=self.product_b.id, choice="increase_quantity",
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_repeated_increase_quantity_submissions_are_not_lost(self):
+        # Simulates a double-click / repeated submission: each resolution
+        # must count, with no lost update and no duplicate row.
+        self.client.force_login(self.member_a)
+        self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [self.product_a.id],
+        })
+
+        self._resolve(
+            self.family_a,
+            product_id=self.product_a.id, choice="increase_quantity",
+        )
+        # Simulate the pending state still showing (e.g. a second
+        # browser tab that hadn't refreshed) and the user clicking again.
+        self._add_pending_again()
+        self._resolve(
+            self.family_a,
+            product_id=self.product_a.id, choice="increase_quantity",
+        )
+
+        self.list_item_a.refresh_from_db()
+        self.assertEqual(self.list_item_a.quantity_required, 1)
+        self.assertEqual(
+            ListItem.objects.filter(
+                product=self.product_a, family=self.family_a,
+            ).count(),
+            3,
+        )
+
+    def _add_pending_again(self):
+        self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [self.product_a.id],
+        })
+
+    def test_double_submitting_the_same_variant_name_does_not_duplicate(self):
+        self.client.force_login(self.admin_a)
+        self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [self.product_a.id],
+        })
+
+        first = self._resolve(
+            self.family_a,
+            product_id=self.product_a.id, choice="create_variant",
+            variant_name="Product A (organic)",
+        )
+        self._add_pending_again()
+        second = self._resolve(
+            self.family_a,
+            product_id=self.product_a.id, choice="create_variant",
+            variant_name="Product A (organic)",
+        )
+
+        self.assertEqual(first.status_code, 302)
+        self.assertEqual(second.status_code, 302)
+        self.assertEqual(
+            Product.objects.filter(
+                product_name__iexact="Product A (organic)",
+            ).count(),
+            1,
+        )
+
+
+class DuplicateProductPromptWebSocketTests(
+    TwoFamilyFixtureMixin, TransactionTestCase,
+):
+    async def test_increase_quantity_broadcasts_updated_quantity(self):
+        communicator = WebsocketCommunicator(
+            ShoppingConsumer.as_asgi(), ws_path(self.family_a),
+        )
+        communicator.scope["user"] = self.member_a
+        communicator.scope["url_route"] = {
+            "kwargs": {"family_slug": self.family_a.slug},
+        }
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+
+        try:
+            await sync_to_async(self.client.force_login)(self.member_a)
+            await sync_to_async(self.client.post)(
+                self.url_a("add_to_shopping_list"),
+                {"selected-products": [self.product_a.id]},
+            )
+            await sync_to_async(self.client.post)(
+                self.url_a("resolve_shopping_list_duplicate"),
+                {
+                    "product_id": self.product_a.id,
+                    "choice": "increase_quantity",
+                },
+            )
+
+            message = await communicator.receive_json_from()
+            self.assertEqual(message["type"], "list_item_added")
+            self.assertNotEqual(message["list_item_id"], self.list_item_a.id)
+            self.assertEqual(message["quantity_required"], 1)
+        finally:
+            await communicator.disconnect()
+
+    async def test_create_variant_broadcasts_a_new_list_item(self):
+        communicator = WebsocketCommunicator(
+            ShoppingConsumer.as_asgi(), ws_path(self.family_a),
+        )
+        communicator.scope["user"] = self.member_a
+        communicator.scope["url_route"] = {
+            "kwargs": {"family_slug": self.family_a.slug},
+        }
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+
+        try:
+            await sync_to_async(self.client.force_login)(self.admin_a)
+            await sync_to_async(self.client.post)(
+                self.url_a("add_to_shopping_list"),
+                {"selected-products": [self.product_a.id]},
+            )
+            await sync_to_async(self.client.post)(
+                self.url_a("resolve_shopping_list_duplicate"),
+                {
+                    "product_id": self.product_a.id,
+                    "choice": "create_variant",
+                    "variant_name": "Product A (organic)",
+                },
+            )
+
+            message = await communicator.receive_json_from()
+            self.assertEqual(message["type"], "list_item_added")
+            self.assertEqual(message["product_name"], "Product A (organic)")
+            self.assertEqual(message["quantity_required"], 1)
+        finally:
+            await communicator.disconnect()
+
+
+class ProductCatalogueAddFlowTests(TwoFamilyTestCase):
+    """Covers clicking a product row to add it, the separate
+    product-details info icon, and the "On list" status indicator."""
+
+    @staticmethod
+    def _extract_row_html(html, product_id):
+        marker = f'data-product-id="{product_id}"'
+        start = html.index(marker)
+        row_start = html.rindex('<li', 0, start)
+        row_end = html.index('</li>', start) + len('</li>')
+        return html[row_start:row_end]
+
+    def test_product_row_click_target_is_a_real_submit_button(self):
+        # A native <button type="submit"> is focusable and keyboard
+        # operable (Enter/Space) without any extra JS or ARIA wiring.
+        self.client.force_login(self.member_a)
+        response = self.client.get(self.url_a("product_list"))
+        row_html = self._extract_row_html(
+            response.content.decode(), self.product_a.id,
+        )
+
+        self.assertIn('<form', row_html)
+        self.assertIn('action="' + self.url_a("add_to_shopping_list") + '"', row_html) # noqa
+        self.assertIn('<button type="submit"', row_html)
+        self.assertIn(
+            f'<span class="product-name-text">{self.product_a.product_name}</span>', # noqa
+            row_html,
+        )
+
+    def test_product_name_is_no_longer_a_details_link(self):
+        self.client.force_login(self.member_a)
+        response = self.client.get(self.url_a("product_list"))
+        row_html = self._extract_row_html(
+            response.content.decode(), self.product_a.id,
+        )
+
+        # The old pattern directly linking the name to product_detail.
+        detail_url = self.url_a(
+            "product_detail", slug=self.product_a.slug,
+        )
+        self.assertNotIn(
+            f'href="{detail_url}">{self.product_a.product_name}</a>',
+            row_html,
+        )
+
+    def test_info_icon_links_to_product_details_outside_the_add_form(self):
+        self.client.force_login(self.member_a)
+        response = self.client.get(self.url_a("product_list"))
+        row_html = self._extract_row_html(
+            response.content.decode(), self.product_a.id,
+        )
+
+        detail_url = self.url_a(
+            "product_detail", slug=self.product_a.slug,
+        )
+        self.assertIn(f'href="{detail_url}"', row_html)
+        # The info link comes after the add-form's closing tag, i.e. it's
+        # a sibling, never nested inside the add button/form.
+        form_close_index = row_html.index('</form>')
+        info_link_index = row_html.index(f'href="{detail_url}"')
+        self.assertGreater(info_link_index, form_close_index)
+
+    def test_visiting_product_details_does_not_add_to_the_list(self):
+        new_product = Product.objects.create(
+            product_name="Untouched Product", family=self.family_a,
+            category=self.category_a, default_shop=self.shop_a,
+            creator=self.admin_a,
+        )
+        self.client.force_login(self.member_a)
+        response = self.client.get(
+            self.url_a("product_detail", slug=new_product.slug),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(
+            ListItem.objects.filter(
+                product=new_product, family=self.family_a,
+            ).exists(),
+        )
+
+    def test_product_not_on_list_shows_no_badge(self):
+        new_product = Product.objects.create(
+            product_name="Fresh Product", family=self.family_a,
+            category=self.category_a, default_shop=self.shop_a,
+            creator=self.admin_a,
+        )
+        self.client.force_login(self.member_a)
+        response = self.client.get(self.url_a("product_list"))
+
+        products_by_id = {
+            product.id: product
+            for product in response.context["product_list"]
+        }
+        self.assertIsNone(products_by_id[new_product.id].on_list_quantity)
+
+        row_html = self._extract_row_html(
+            response.content.decode(), new_product.id,
+        )
+        self.assertIn('on-list-badge', row_html)
+        self.assertIn('d-none', row_html)
+
+    def test_product_on_list_shows_quantity_badge(self):
+        self.client.force_login(self.member_a)
+        response = self.client.get(self.url_a("product_list"))
+
+        products_by_id = {
+            product.id: product
+            for product in response.context["product_list"]
+        }
+        self.assertEqual(products_by_id[self.product_a.id].on_list_quantity, 1) # noqa
+
+        row_html = self._extract_row_html(
+            response.content.decode(), self.product_a.id,
+        )
+        self.assertIn('On list', row_html)
+        badge_start = row_html.index('on-list-badge')
+        badge_section = row_html[badge_start:badge_start + 200]
+        self.assertNotIn('d-none', badge_section.split('"', 1)[0])
+
+    def test_quantity_increase_updates_the_catalogue_indicator(self):
+        self.client.force_login(self.member_a)
+        self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [self.product_a.id],
+        })
+        self.client.post(self.url_a("resolve_shopping_list_duplicate"), {
+            "product_id": self.product_a.id, "choice": "increase_quantity",
+        })
+
+        response = self.client.get(self.url_a("product_list"))
+        products_by_id = {
+            product.id: product
+            for product in response.context["product_list"]
+        }
+        self.assertEqual(products_by_id[self.product_a.id].on_list_quantity, 2) # noqa
+
+    def test_cancelled_item_still_counts_toward_the_indicator(self):
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+
+        self.client.force_login(self.member_a)
+        response = self.client.get(self.url_a("product_list"))
+
+        products_by_id = {
+            product.id: product
+            for product in response.context["product_list"]
+        }
+        self.assertEqual(products_by_id[self.product_a.id].on_list_quantity, 1) # noqa
+
+    def test_bought_item_no_longer_counts_toward_the_indicator(self):
+        self.list_item_a.date_bought = timezone.now()
+        self.list_item_a.quantity_bought = 1
+        self.list_item_a.save()
+
+        self.client.force_login(self.member_a)
+        response = self.client.get(self.url_a("product_list"))
+
+        products_by_id = {
+            product.id: product
+            for product in response.context["product_list"]
+        }
+        self.assertIsNone(products_by_id[self.product_a.id].on_list_quantity)
+
+    def test_variant_has_its_own_independent_indicator(self):
+        self.client.force_login(self.admin_a)
+        self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [self.product_a.id],
+        })
+        self.client.post(self.url_a("resolve_shopping_list_duplicate"), {
+            "product_id": self.product_a.id, "choice": "create_variant",
+            "variant_name": "Product A (organic)",
+        })
+        variant = Product.objects.get(
+            product_name="Product A (organic)", family=self.family_a,
+        )
+
+        response = self.client.get(self.url_a("product_list"))
+        products_by_id = {
+            product.id: product
+            for product in response.context["product_list"]
+        }
+        # The original is untouched; the variant has its own quantity.
+        self.assertEqual(products_by_id[self.product_a.id].on_list_quantity, 1) # noqa
+        self.assertEqual(products_by_id[variant.id].on_list_quantity, 1)
+
+    def test_family_isolation_of_catalogue_status(self):
+        # family_b's product/list-item data must never leak into
+        # family_a's rendered catalogue context.
+        self.client.force_login(self.member_a)
+        response = self.client.get(self.url_a("product_list"))
+
+        product_ids = {
+            product.id for product in response.context["product_list"]
+        }
+        self.assertNotIn(self.product_b.id, product_ids)
+
+    def test_clicking_a_product_not_on_the_list_adds_it_via_the_row_form(self): # noqa
+        new_product = Product.objects.create(
+            product_name="Row Click Product", family=self.family_a,
+            category=self.category_a, default_shop=self.shop_a,
+            creator=self.admin_a,
+        )
+        self.client.force_login(self.member_a)
+        response = self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [new_product.id],
+        })
+
+        self.assertRedirects(response, self.url_a("shopping_list"))
+        self.assertTrue(
+            ListItem.objects.filter(
+                product=new_product, family=self.family_a,
+            ).exists(),
+        )
+
+    def test_clicking_a_product_already_on_the_list_redirects_to_the_prompt(self): # noqa
+        self.client.force_login(self.member_a)
+        response = self.client.post(self.url_a("add_to_shopping_list"), {
+            "selected-products": [self.product_a.id],
+        })
+
+        self.assertRedirects(response, self.url_a("product_list"))
+        self.assertEqual(
+            ListItem.objects.filter(
+                product=self.product_a, family=self.family_a,
+            ).count(),
+            1,
+        )
+
+
+class ProductCatalogueStatusWebSocketTests(
+    TwoFamilyFixtureMixin, TransactionTestCase,
+):
+    async def _connect(self, family, user):
+        communicator = WebsocketCommunicator(
+            ShoppingConsumer.as_asgi(), ws_path(family),
+        )
+        communicator.scope["user"] = user
+        communicator.scope["url_route"] = {
+            "kwargs": {"family_slug": family.slug},
+        }
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+        return communicator
+
+    async def test_adding_a_new_product_broadcasts_its_catalogue_status(self):
+        new_product = await sync_to_async(Product.objects.create)(
+            product_name="Broadcast Product", family=self.family_a,
+            category=self.category_a, default_shop=self.shop_a,
+            creator=self.admin_a,
+        )
+        communicator = await self._connect(self.family_a, self.member_a)
+
+        try:
+            await sync_to_async(self.client.force_login)(self.member_a)
+            await sync_to_async(self.client.post)(
+                self.url_a("add_to_shopping_list"),
+                {"selected-products": [new_product.id]},
+            )
+
+            messages = [
+                await communicator.receive_json_from() for _ in range(2)
+            ]
+            status_messages = [
+                m for m in messages if m["type"] == "product_list_status"
+            ]
+            self.assertEqual(len(status_messages), 1)
+            self.assertEqual(status_messages[0]["product_id"], new_product.id) # noqa
+            self.assertEqual(status_messages[0]["on_list_quantity"], 1)
+        finally:
+            await communicator.disconnect()
+
+    async def test_increasing_quantity_broadcasts_updated_catalogue_status(self): # noqa
+        communicator = await self._connect(self.family_a, self.member_a)
+
+        try:
+            await sync_to_async(self.client.force_login)(self.member_a)
+            await sync_to_async(self.client.post)(
+                self.url_a("resolve_shopping_list_duplicate"),
+                {
+                    "product_id": self.product_a.id,
+                    "choice": "increase_quantity",
+                },
+            )
+
+            messages = [
+                await communicator.receive_json_from() for _ in range(2)
+            ]
+            status_messages = [
+                m for m in messages if m["type"] == "product_list_status"
+            ]
+            self.assertEqual(len(status_messages), 1)
+            self.assertEqual(
+                status_messages[0]["product_id"], self.product_a.id,
+            )
+            self.assertEqual(status_messages[0]["on_list_quantity"], 2)
+        finally:
+            await communicator.disconnect()
+
+    async def test_creating_a_variant_broadcasts_status_for_the_variant_only(self): # noqa
+        communicator = await self._connect(self.family_a, self.member_a)
+
+        try:
+            await sync_to_async(self.client.force_login)(self.admin_a)
+            await sync_to_async(self.client.post)(
+                self.url_a("resolve_shopping_list_duplicate"),
+                {
+                    "product_id": self.product_a.id,
+                    "choice": "create_variant",
+                    "variant_name": "Product A (organic)",
+                },
+            )
+            variant = await sync_to_async(Product.objects.get)(
+                product_name="Product A (organic)", family=self.family_a,
+            )
+
+            messages = [
+                await communicator.receive_json_from() for _ in range(2)
+            ]
+            status_messages = [
+                m for m in messages if m["type"] == "product_list_status"
+            ]
+            self.assertEqual(len(status_messages), 1)
+            self.assertEqual(status_messages[0]["product_id"], variant.id)
+            self.assertEqual(status_messages[0]["on_list_quantity"], 1)
+        finally:
+            await communicator.disconnect()
+
+    async def test_buying_a_basket_item_broadcasts_its_removal_from_status(self): # noqa
+        def put_in_basket():
+            self.list_item_a.in_basket = True
+            self.list_item_a.put_in_basket_by = self.member_a
+            self.list_item_a.time_put_in_basket = timezone.now()
+            self.list_item_a.save()
+
+        await sync_to_async(put_in_basket)()
+        communicator = await self._connect(self.family_a, self.member_a)
+
+        try:
+            await sync_to_async(self.client.force_login)(self.member_a)
+            await sync_to_async(self.client.post)(
+                self.url_a("shopping_list"), {"action": "buy_basket"},
+            )
+
+            messages = [
+                await communicator.receive_json_from() for _ in range(2)
+            ]
+            status_messages = [
+                m for m in messages if m["type"] == "product_list_status"
+            ]
+            self.assertEqual(len(status_messages), 1)
+            self.assertEqual(
+                status_messages[0]["product_id"], self.product_a.id,
+            )
+            self.assertIsNone(status_messages[0]["on_list_quantity"])
+        finally:
+            await communicator.disconnect()
+
+    async def test_family_isolation_of_catalogue_status_broadcasts(self):
+        communicator_a = await self._connect(self.family_a, self.member_a)
+        communicator_b = await self._connect(self.family_b, self.member_b)
+
+        try:
+            await sync_to_async(self.client.force_login)(self.member_b)
+            await sync_to_async(self.client.post)(
+                self.url_b("resolve_shopping_list_duplicate"),
+                {
+                    "product_id": self.product_b.id,
+                    "choice": "increase_quantity",
+                },
+            )
+
+            self.assertTrue(
+                await communicator_a.receive_nothing(timeout=0.2),
+            )
+            message = await communicator_b.receive_json_from()
+            self.assertEqual(message["type"], "list_item_added")
+        finally:
+            await communicator_a.disconnect()
+            await communicator_b.disconnect()
+
+
+class ShoppingListLifecycleTests(TwoFamilyTestCase):
+    """Covers the open/closed list lifecycle: at most one open list per
+    family, the close-out suggestion, and closing with carry-forward."""
+
+    def _open_list(self, family):
+        return ShoppingList.objects.get(
+            family=family, status=ShoppingList.Status.OPEN,
+        )
+
+    def _close(
+        self, family, shopping_list_id,
+        carry_forward_unpurchased=False, carry_forward_cancelled=False,
+    ):
+        data = {"shopping_list_id": shopping_list_id}
+        if carry_forward_unpurchased:
+            data["carry_forward_unpurchased"] = "on"
+        if carry_forward_cancelled:
+            data["carry_forward_cancelled"] = "on"
+        return self.client.post(
+            family_url(family, "close_shopping_list"), data,
+        )
+
+    # --- Basic invariants ---
+
+    def test_family_has_at_most_one_open_list(self):
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ShoppingList.objects.create(family=self.family_a)
+
+    def test_new_family_can_create_an_open_list_on_demand(self):
+        new_family = Family.objects.create(name="Brand New Family")
+        self.assertFalse(
+            ShoppingList.objects.filter(family=new_family).exists(),
+        )
+
+        created = ShoppingList.get_or_create_open(new_family)
+
+        self.assertEqual(created.status, ShoppingList.Status.OPEN)
+        self.assertEqual(
+            ShoppingList.get_or_create_open(new_family), created,
+        )
+        self.assertEqual(
+            ShoppingList.objects.filter(
+                family=new_family, status=ShoppingList.Status.OPEN,
+            ).count(),
+            1,
+        )
+
+    def test_existing_family_items_were_backfilled_onto_one_open_list(self):
+        # TwoFamilyFixtureMixin's items go through ListItem.save(), which
+        # auto-attaches the family's open list (creating it on first use,
+        # exactly like the real backfill migration did for pre-existing
+        # families).
+        self.list_item_a.refresh_from_db()
+        self.assertIsNotNone(self.list_item_a.shopping_list_id)
+        self.assertEqual(
+            self.list_item_a.shopping_list.status, ShoppingList.Status.OPEN,
+        )
+
+    # --- Completion detection ---
+
+    def test_list_with_outstanding_items_is_not_complete(self):
+        from .views import is_open_list_complete
+        self.assertFalse(is_open_list_complete(self.family_a))
+
+    def test_list_with_all_items_resolved_is_complete(self):
+        from .views import is_open_list_complete
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+        self.assertTrue(is_open_list_complete(self.family_a))
+
+    def test_empty_list_does_not_count_as_complete(self):
+        from .views import is_open_list_complete
+        new_family = Family.objects.create(name="Empty Family")
+        ShoppingList.get_or_create_open(new_family)
+        self.assertFalse(is_open_list_complete(new_family))
+
+    def test_shopping_list_page_shows_completion_suggestion_when_complete(self): # noqa
+        self.client.force_login(self.member_a)
+        response = self.client.get(self.url_a("shopping_list"))
+        self.assertFalse(response.context["show_completion_suggestion"])
+
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+        response = self.client.get(self.url_a("shopping_list"))
+        self.assertTrue(response.context["show_completion_suggestion"])
+        self.assertEqual(
+            response.context["open_list"], self._open_list(self.family_a),
+        )
+
+    def test_deferring_suggestion_leaves_list_open_and_unchanged(self):
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+        self.client.force_login(self.member_a)
+        open_list = self._open_list(self.family_a)
+
+        response = self.client.post(
+            self.url_a("dismiss_shopping_list_completion"),
+            {"shopping_list_id": open_list.id, "item_count": 1},
+        )
+        self.assertRedirects(response, self.url_a("shopping_list"))
+
+        follow_up = self.client.get(self.url_a("shopping_list"))
+        self.assertFalse(follow_up.context["show_completion_suggestion"])
+
+        open_list.refresh_from_db()
+        self.assertEqual(open_list.status, ShoppingList.Status.OPEN)
+        self.list_item_a.refresh_from_db()
+        self.assertTrue(self.list_item_a.cancelled)
+        self.assertTrue(self.list_item_a.current)
+
+    def test_adding_another_item_makes_the_suggestion_reappear(self):
+        # A dismissal is tied to the item count at the time; once that
+        # count changes (a new item was added to the still-open list),
+        # the suggestion becomes eligible again next time it's complete.
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+        self.client.force_login(self.member_a)
+        open_list = self._open_list(self.family_a)
+        self.client.post(
+            self.url_a("dismiss_shopping_list_completion"),
+            {"shopping_list_id": open_list.id, "item_count": 1},
+        )
+
+        second_item = ListItem.objects.create(
+            product=self.product_a, family=self.family_a,
+            creator=self.admin_a, cancelled=True,
+        )
+        self.assertTrue(
+            self.client.get(
+                self.url_a("shopping_list"),
+            ).context["show_completion_suggestion"],
+        )
+        del second_item  # only needed to create the second row
+
+    # --- Closing and carrying forward ---
+
+    def test_closing_list_preserves_historical_contents_and_statuses(self):
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+        add_test_units(self.list_item_a, 1)
+        old_list = self._open_list(self.family_a)
+        self.client.force_login(self.member_a)
+
+        response = self._close(self.family_a, old_list.id)
+
+        self.assertRedirects(response, self.url_a("shopping_list"))
+        old_list.refresh_from_db()
+        self.assertEqual(old_list.status, ShoppingList.Status.CLOSED)
+        self.assertIsNotNone(old_list.closed_at)
+        self.assertEqual(old_list.closed_by, self.member_a)
+
+        self.list_item_a.refresh_from_db()
+        self.assertEqual(self.list_item_a.shopping_list_id, old_list.id)
+        self.assertTrue(self.list_item_a.cancelled)
+        self.assertEqual(self.list_item_a.quantity_required, 1)
+        self.assertFalse(self.list_item_a.current)
+
+    def test_new_open_list_is_created_on_close(self):
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+        old_list = self._open_list(self.family_a)
+        self.client.force_login(self.member_a)
+
+        self._close(self.family_a, old_list.id)
+
+        new_list = self._open_list(self.family_a)
+        self.assertNotEqual(new_list.id, old_list.id)
+        self.assertEqual(
+            ShoppingList.objects.filter(
+                family=self.family_a, status=ShoppingList.Status.OPEN,
+            ).count(),
+            1,
+        )
+
+    def test_closing_without_carrying_forward_cancelled_items(self):
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+        old_list = self._open_list(self.family_a)
+        self.client.force_login(self.member_a)
+
+        self._close(self.family_a, old_list.id, carry_forward_cancelled=False) # noqa
+
+        new_list = self._open_list(self.family_a)
+        self.assertEqual(ListItem.objects.filter(shopping_list=new_list).count(), 0) # noqa
+
+    def test_closing_with_cancelled_items_carried_forward(self):
+        self.list_item_a.cancelled = True
+        self.list_item_a.creator_notes = "the big box"
+        self.list_item_a.save()
+        add_test_units(self.list_item_a, 2)
+        old_list = self._open_list(self.family_a)
+        self.client.force_login(self.member_a)
+
+        self._close(self.family_a, old_list.id, carry_forward_cancelled=True)
+
+        new_list = self._open_list(self.family_a)
+        new_item = ListItem.objects.filter(shopping_list=new_list).first()
+        self.assertEqual(new_item.product_id, self.product_a.id)
+        self.assertEqual(new_item.quantity_required, 1)
+        self.assertEqual(ListItem.objects.filter(shopping_list=new_list).count(), 3)
+        self.assertEqual(new_item.creator_notes, "the big box")
+        # Fresh status: not copied blindly from the historical item.
+        self.assertFalse(new_item.cancelled)
+        self.assertIsNone(new_item.date_bought)
+        self.assertFalse(new_item.in_basket)
+        self.assertTrue(new_item.current)
+
+    def test_bought_items_are_never_carried_forward(self):
+        self.list_item_a.date_bought = timezone.now()
+        self.list_item_a.quantity_bought = 1
+        self.list_item_a.save()
+        second_item = ListItem.objects.create(
+            product=Product.objects.create(
+                product_name="Cancelled Product", family=self.family_a,
+                category=self.category_a, default_shop=self.shop_a,
+                creator=self.admin_a,
+            ),
+            family=self.family_a, creator=self.admin_a, cancelled=True,
+        )
+        old_list = self._open_list(self.family_a)
+        self.client.force_login(self.member_a)
+
+        self._close(self.family_a, old_list.id, carry_forward_cancelled=True)
+
+        new_list = self._open_list(self.family_a)
+        carried_product_ids = set(
+            ListItem.objects.filter(
+                shopping_list=new_list,
+            ).values_list('product_id', flat=True),
+        )
+        self.assertNotIn(self.product_a.id, carried_product_ids)
+        self.assertIn(second_item.product_id, carried_product_ids)
+
+    def test_variant_product_is_preserved_as_a_distinct_product(self):
+        variant = Product.objects.create(
+            product_name="Product A Variant", family=self.family_a,
+            category=self.category_a, default_shop=self.shop_a,
+            creator=self.admin_a, based_on=self.product_a,
+        )
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+        variant_item = ListItem.objects.create(
+            product=variant, family=self.family_a,
+            creator=self.admin_a, cancelled=True,
+        )
+        old_list = self._open_list(self.family_a)
+        self.client.force_login(self.member_a)
+
+        self._close(self.family_a, old_list.id, carry_forward_cancelled=True)
+
+        new_list = self._open_list(self.family_a)
+        new_product_ids = set(
+            ListItem.objects.filter(
+                shopping_list=new_list,
+            ).values_list('product_id', flat=True),
+        )
+        self.assertEqual(new_product_ids, {self.product_a.id, variant.id})
+        del variant_item  # only needed to create the second row
+
+    def test_carry_forward_preserves_multiple_units_for_one_product(self):
+        # Not achievable through the normal UI (which prevents this), but
+        # the data model doesn't forbid it, so carry-forward must cope.
+        extra_item = ListItem.objects.create(
+            product=self.product_a, family=self.family_a,
+            creator=self.admin_a, cancelled=True,
+        )
+        add_test_units(extra_item, 1)
+        self.list_item_a.cancelled = True
+        self.list_item_a.quantity_required = 1
+        self.list_item_a.save()
+        old_list = self._open_list(self.family_a)
+        self.client.force_login(self.member_a)
+
+        self._close(self.family_a, old_list.id, carry_forward_cancelled=True)
+
+        new_list = self._open_list(self.family_a)
+        new_items = ListItem.objects.filter(
+            shopping_list=new_list, product=self.product_a,
+        )
+        self.assertEqual(new_items.count(), 3)
+        self.assertTrue(all(item.quantity_required == 1 for item in new_items))
+        del extra_item
+
+    def test_repeated_close_requests_are_idempotent(self):
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+        old_list = self._open_list(self.family_a)
+        self.client.force_login(self.member_a)
+
+        first = self._close(
+            self.family_a, old_list.id, carry_forward_cancelled=True,
+        )
+        second = self._close(
+            self.family_a, old_list.id, carry_forward_cancelled=True,
+        )
+
+        self.assertEqual(first.status_code, 302)
+        self.assertEqual(second.status_code, 302)
+        self.assertEqual(
+            ShoppingList.objects.filter(family=self.family_a).count(), 2,
+        )
+        self.assertEqual(
+            ShoppingList.objects.filter(
+                family=self.family_a, status=ShoppingList.Status.OPEN,
+            ).count(),
+            1,
+        )
+        new_list = self._open_list(self.family_a)
+        self.assertEqual(
+            ListItem.objects.filter(
+                shopping_list=new_list, product=self.product_a,
+            ).count(),
+            1,
+        )
+
+    def test_closing_a_list_with_outstanding_unpurchased_items_is_allowed(self): # noqa
+        # self.list_item_a is left in its default state: not bought, not
+        # cancelled. The user should not be forced to cancel it just to
+        # be allowed to close the list.
+        open_list = self._open_list(self.family_a)
+        self.client.force_login(self.member_a)
+
+        response = self._close(self.family_a, open_list.id)
+
+        self.assertRedirects(response, self.url_a("shopping_list"))
+        open_list.refresh_from_db()
+        self.assertEqual(open_list.status, ShoppingList.Status.CLOSED)
+        self.list_item_a.refresh_from_db()
+        self.assertEqual(self.list_item_a.shopping_list_id, open_list.id)
+        self.assertFalse(self.list_item_a.current)
+        self.assertFalse(self.list_item_a.cancelled)
+        self.assertIsNone(self.list_item_a.date_bought)
+
+        new_list = self._open_list(self.family_a)
+        self.assertEqual(
+            ListItem.objects.filter(shopping_list=new_list).count(), 0,
+        )
+
+    def test_closing_an_empty_list_is_allowed(self):
+        self.list_item_a.delete()
+        open_list = self._open_list(self.family_a)
+        self.assertEqual(
+            ListItem.objects.filter(shopping_list=open_list).count(), 0,
+        )
+        self.client.force_login(self.member_a)
+
+        response = self._close(self.family_a, open_list.id)
+
+        self.assertRedirects(response, self.url_a("shopping_list"))
+        open_list.refresh_from_db()
+        self.assertEqual(open_list.status, ShoppingList.Status.CLOSED)
+        new_list = self._open_list(self.family_a)
+        self.assertNotEqual(new_list.id, open_list.id)
+        self.assertEqual(
+            ListItem.objects.filter(shopping_list=new_list).count(), 0,
+        )
+
+    def test_closing_with_unpurchased_items_carried_forward(self):
+        self.list_item_a.creator_notes = "the small box"
+        self.list_item_a.save()
+        add_test_units(self.list_item_a, 3)
+        old_list = self._open_list(self.family_a)
+        self.client.force_login(self.member_a)
+
+        self._close(
+            self.family_a, old_list.id, carry_forward_unpurchased=True,
+        )
+
+        new_list = self._open_list(self.family_a)
+        new_item = ListItem.objects.filter(shopping_list=new_list).first()
+        self.assertEqual(new_item.product_id, self.product_a.id)
+        self.assertEqual(new_item.quantity_required, 1)
+        self.assertEqual(ListItem.objects.filter(shopping_list=new_list).count(), 4)
+        self.assertEqual(new_item.creator_notes, "the small box")
+        # Fresh status: not copied blindly from the historical item.
+        self.assertFalse(new_item.cancelled)
+        self.assertIsNone(new_item.date_bought)
+        self.assertFalse(new_item.in_basket)
+        self.assertTrue(new_item.current)
+
+    # --- Independent carry-forward combinations ---
+
+    def _make_mixed_list(self):
+        """Gives family_a's current open list one unpurchased
+        (uncancelled) item and one separate cancelled item, as distinct
+        products, and returns (unpurchased_item, cancelled_item)."""
+        self.list_item_a.quantity_required = 1
+        self.list_item_a.save()
+        cancelled_product = Product.objects.create(
+            product_name="Cancelled Product", family=self.family_a,
+            category=self.category_a, default_shop=self.shop_a,
+            creator=self.admin_a,
+        )
+        cancelled_item = ListItem.objects.create(
+            product=cancelled_product, family=self.family_a,
+            creator=self.admin_a, cancelled=True,
+        )
+        add_test_units(cancelled_item, 1)
+        return self.list_item_a, cancelled_item
+
+    def test_closing_with_neither_carry_forward_option_carries_nothing(self): # noqa
+        self._make_mixed_list()
+        old_list = self._open_list(self.family_a)
+        self.client.force_login(self.member_a)
+
+        self._close(self.family_a, old_list.id)
+
+        new_list = self._open_list(self.family_a)
+        self.assertEqual(
+            ListItem.objects.filter(shopping_list=new_list).count(), 0,
+        )
+
+    def test_closing_with_only_unpurchased_carried_forward(self):
+        unpurchased_item, cancelled_item = self._make_mixed_list()
+        old_list = self._open_list(self.family_a)
+        self.client.force_login(self.member_a)
+
+        self._close(
+            self.family_a, old_list.id, carry_forward_unpurchased=True,
+        )
+
+        new_list = self._open_list(self.family_a)
+        carried_product_ids = set(
+            ListItem.objects.filter(
+                shopping_list=new_list,
+            ).values_list('product_id', flat=True),
+        )
+        self.assertEqual(carried_product_ids, {unpurchased_item.product_id})
+        self.assertNotIn(cancelled_item.product_id, carried_product_ids)
+
+    def test_closing_with_only_cancelled_carried_forward(self):
+        unpurchased_item, cancelled_item = self._make_mixed_list()
+        old_list = self._open_list(self.family_a)
+        self.client.force_login(self.member_a)
+
+        self._close(
+            self.family_a, old_list.id, carry_forward_cancelled=True,
+        )
+
+        new_list = self._open_list(self.family_a)
+        carried_product_ids = set(
+            ListItem.objects.filter(
+                shopping_list=new_list,
+            ).values_list('product_id', flat=True),
+        )
+        self.assertEqual(carried_product_ids, {cancelled_item.product_id})
+        self.assertNotIn(unpurchased_item.product_id, carried_product_ids)
+
+    def test_closing_with_both_carried_forward(self):
+        unpurchased_item, cancelled_item = self._make_mixed_list()
+        old_list = self._open_list(self.family_a)
+        self.client.force_login(self.member_a)
+
+        self._close(
+            self.family_a, old_list.id,
+            carry_forward_unpurchased=True, carry_forward_cancelled=True,
+        )
+
+        new_list = self._open_list(self.family_a)
+        carried_product_ids = set(
+            ListItem.objects.filter(
+                shopping_list=new_list,
+            ).values_list('product_id', flat=True),
+        )
+        self.assertEqual(
+            carried_product_ids,
+            {unpurchased_item.product_id, cancelled_item.product_id},
+        )
+        # Both carried items get fresh, active status regardless of
+        # which bucket they came from.
+        for item in ListItem.objects.filter(shopping_list=new_list):
+            self.assertFalse(item.cancelled)
+            self.assertIsNone(item.date_bought)
+            self.assertFalse(item.in_basket)
+            self.assertTrue(item.current)
+
+    def test_bought_items_are_never_carried_forward_even_with_both_options(self): # noqa
+        self.list_item_a.date_bought = timezone.now()
+        self.list_item_a.quantity_bought = 1
+        self.list_item_a.save()
+        unpurchased_item = ListItem.objects.create(
+            product=Product.objects.create(
+                product_name="Unpurchased Product", family=self.family_a,
+                category=self.category_a, default_shop=self.shop_a,
+                creator=self.admin_a,
+            ),
+            family=self.family_a, creator=self.admin_a,
+        )
+        cancelled_item = ListItem.objects.create(
+            product=Product.objects.create(
+                product_name="Cancelled Product", family=self.family_a,
+                category=self.category_a, default_shop=self.shop_a,
+                creator=self.admin_a,
+            ),
+            family=self.family_a, creator=self.admin_a, cancelled=True,
+        )
+        old_list = self._open_list(self.family_a)
+        self.client.force_login(self.member_a)
+
+        self._close(
+            self.family_a, old_list.id,
+            carry_forward_unpurchased=True, carry_forward_cancelled=True,
+        )
+
+        new_list = self._open_list(self.family_a)
+        carried_product_ids = set(
+            ListItem.objects.filter(
+                shopping_list=new_list,
+            ).values_list('product_id', flat=True),
+        )
+        self.assertNotIn(self.product_a.id, carried_product_ids)
+        self.assertIn(unpurchased_item.product_id, carried_product_ids)
+        self.assertIn(cancelled_item.product_id, carried_product_ids)
+
+    def test_closing_someone_elses_family_list_id_is_a_safe_no_op(self):
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+        open_list_a = self._open_list(self.family_a)
+        open_list_b = self._open_list(self.family_b)
+        self.client.force_login(self.member_a)
+
+        # member_a submits family B's list id while acting within family
+        # A's own URL; the view only ever operates on family A's actual
+        # open list, so this can't touch or close family B's list.
+        response = self._close(self.family_a, open_list_b.id)
+
+        self.assertRedirects(response, self.url_a("shopping_list"))
+        open_list_a.refresh_from_db()
+        open_list_b.refresh_from_db()
+        self.assertEqual(open_list_a.status, ShoppingList.Status.OPEN)
+        self.assertEqual(open_list_b.status, ShoppingList.Status.OPEN)
+
+    def test_cross_family_close_request_is_rejected(self):
+        self.client.force_login(self.member_a)
+        response = self.client.post(
+            self.url_b("close_shopping_list"),
+            {"shopping_list_id": self._open_list(self.family_b).id},
+        )
+        self.assertEqual(response.status_code, 404)
+
+    # --- Closed lists can't be modified through normal endpoints ---
+
+    def test_closed_list_item_cannot_be_cancelled(self):
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+        old_list = self._open_list(self.family_a)
+        self.client.force_login(self.member_a)
+        self._close(self.family_a, old_list.id)
+
+        response = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "uncancel",
+        })
+
+        self.assertEqual(response.status_code, 400)
+        self.list_item_a.refresh_from_db()
+        self.assertTrue(self.list_item_a.cancelled)
+
+    def test_closed_list_item_cannot_be_added_to_basket(self):
+        # Buy the item first so the list qualifies as complete, then
+        # close it, then try to act on the now-historical item.
+        self.list_item_a.date_bought = timezone.now()
+        self.list_item_a.quantity_bought = 1
+        self.list_item_a.save()
+        old_list = self._open_list(self.family_a)
+        self.client.force_login(self.member_a)
+        self._close(self.family_a, old_list.id)
+
+        response = self.client.post(self.url_a("shopping_list"), {
+            "item_id": self.list_item_a.id, "action": "add_to_basket",
+        })
+
+        self.assertEqual(response.status_code, 400)
+
+
+class ShoppingListLifecycleWebSocketTests(
+    TwoFamilyFixtureMixin, TransactionTestCase,
+):
+    async def _connect(self, family, user):
+        communicator = WebsocketCommunicator(
+            ShoppingConsumer.as_asgi(), ws_path(family),
+        )
+        communicator.scope["user"] = user
+        communicator.scope["url_route"] = {
+            "kwargs": {"family_slug": family.slug},
+        }
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+        return communicator
+
+    async def test_cancelling_the_last_item_broadcasts_list_complete(self):
+        communicator = await self._connect(self.family_a, self.member_a)
+
+        try:
+            await sync_to_async(self.client.force_login)(self.member_a)
+            await sync_to_async(self.client.post)(
+                self.url_a("shopping_list"),
+                {"item_id": self.list_item_a.id, "action": "cancel"},
+            )
+
+            messages = [
+                await communicator.receive_json_from() for _ in range(2)
+            ]
+            complete_messages = [
+                m for m in messages if m["type"] == "shopping_list_complete"
+            ]
+            self.assertEqual(len(complete_messages), 1)
+
+            open_list = await sync_to_async(ShoppingList.objects.get)(
+                family=self.family_a, status=ShoppingList.Status.OPEN,
+            )
+            self.assertEqual(
+                complete_messages[0]["shopping_list_id"], open_list.id,
+            )
+        finally:
+            await communicator.disconnect()
+
+    async def test_closing_the_list_broadcasts_replaced_and_new_item(self):
+        def prepare():
+            self.list_item_a.cancelled = True
+            self.list_item_a.save()
+            return ShoppingList.objects.get(
+                family=self.family_a, status=ShoppingList.Status.OPEN,
+            )
+
+        old_list = await sync_to_async(prepare)()
+        communicator = await self._connect(self.family_a, self.member_a)
+
+        try:
+            await sync_to_async(self.client.force_login)(self.member_a)
+            await sync_to_async(self.client.post)(
+                self.url_a("close_shopping_list"),
+                {
+                    "shopping_list_id": old_list.id,
+                    "carry_forward_cancelled": "on",
+                },
+            )
+
+            # One product_list_status (product_a), one list_item_added
+            # (the carried-forward item), one shopping_list_replaced.
+            messages = [
+                await communicator.receive_json_from() for _ in range(3)
+            ]
+            types = {m["type"] for m in messages}
+            self.assertEqual(
+                types,
+                {
+                    'product_list_status', 'list_item_added',
+                    'shopping_list_replaced',
+                },
+            )
+
+            replaced = next(
+                m for m in messages if m["type"] == 'shopping_list_replaced'
+            )
+            self.assertEqual(replaced["closed_list_id"], old_list.id)
+
+            new_list = await sync_to_async(
+                lambda: ShoppingList.objects.get(
+                    family=self.family_a, status=ShoppingList.Status.OPEN,
+                ),
+            )()
+            self.assertEqual(replaced["new_list_id"], new_list.id)
+
+            added = next(
+                m for m in messages if m["type"] == 'list_item_added'
+            )
+            self.assertEqual(added["product_name"], "Product A")
+        finally:
+            await communicator.disconnect()
+
+    async def test_closing_a_list_with_outstanding_items_broadcasts_replaced(self): # noqa
+        # self.list_item_a is left unpurchased and uncancelled; closing
+        # with neither carry-forward option checked should still close
+        # the list (no "list still has outstanding items" error) and
+        # broadcast the replacement, just without any carried-forward
+        # item.
+        old_list = await sync_to_async(
+            lambda: ShoppingList.objects.get(
+                family=self.family_a, status=ShoppingList.Status.OPEN,
+            ),
+        )()
+        communicator = await self._connect(self.family_a, self.member_a)
+
+        try:
+            await sync_to_async(self.client.force_login)(self.member_a)
+            response = await sync_to_async(self.client.post)(
+                self.url_a("close_shopping_list"),
+                {"shopping_list_id": old_list.id},
+            )
+            self.assertEqual(response.status_code, 302)
+
+            # One product_list_status (product_a's on-list quantity
+            # changed), one shopping_list_replaced - no list_item_added,
+            # since nothing was carried forward.
+            messages = [
+                await communicator.receive_json_from() for _ in range(2)
+            ]
+            types = {m["type"] for m in messages}
+            self.assertEqual(
+                types, {'product_list_status', 'shopping_list_replaced'},
+            )
+
+            replaced = next(
+                m for m in messages if m["type"] == 'shopping_list_replaced'
+            )
+            self.assertEqual(replaced["closed_list_id"], old_list.id)
+        finally:
+            await communicator.disconnect()
+
+
+
+
+class ItemAttributionTests(TwoFamilyTestCase):
+    def setUp(self):
+        super().setUp()
+        self.item2 = ListItem.objects.create(
+            product=self.product_a, family=self.family_a,
+            creator=self.admin_a, slug="second-item",
+        )
+
+    def act(self, user, item, action, family_url_name="shopping_list"):
+        self.client.force_login(user)
+        return self.client.post(self.url_a(family_url_name), {
+            "item_id": item.id, "action": action,
+        })
+
+    def page(self, user):
+        self.client.force_login(user)
+        return self.client.get(self.url_a("shopping_list")).content.decode()
+
+    def row(self, html, item):
+        start = html.rindex("<li", 0, html.index(f'data-item-id="{item.id}"'))
+        return html[start:html.index("</li>", start)]
+
+    # --- Basket ownership, colour and identity ---
+
+    def test_each_member_gets_consistent_colour_and_identity(self):
+        self.act(self.member_a, self.list_item_a, "add_to_basket")
+        self.act(self.admin_a, self.item2, "add_to_basket")
+
+        # Same rendering regardless of who is viewing.
+        for viewer in (self.member_a, self.admin_a):
+            html = self.page(viewer)
+            row_1 = self.row(html, self.list_item_a)
+            row_2 = self.row(html, self.item2)
+            self.assertIn("member-color-1", row_1)
+            self.assertIn("In basket: member_a", row_1)
+            self.assertIn("member-color-0", row_2)
+            self.assertIn("In basket: admin_a", row_2)
+            self.assertIn('data-state="in_basket"', row_1)
+
+    def test_ordinary_item_has_no_highlight_or_attribution(self):
+        row = self.row(self.page(self.member_a), self.list_item_a)
+        self.assertIn('data-state="ordinary"', row)
+        self.assertNotIn("member-color", row)
+        self.assertNotIn("item-attribution", row)
+
+    def test_other_member_cannot_claim_item_in_someone_elses_basket(self):
+        self.act(self.member_a, self.list_item_a, "add_to_basket")
+        self.list_item_a.refresh_from_db()
+        stamp = self.list_item_a.time_put_in_basket
+        self.item2.cancelled = True
+        self.item2.save()
+        count = ListItem.objects.count()
+
+        response = self.act(self.admin_a, self.list_item_a, "add_to_basket")
+
+        self.assertEqual(response.status_code, 409)
+        self.list_item_a.refresh_from_db()
+        self.assertEqual(self.list_item_a.put_in_basket_by, self.member_a)
+        self.assertEqual(self.list_item_a.time_put_in_basket, stamp)
+        self.assertEqual(self.list_item_a.quantity_required, 1)
+        self.assertEqual(ListItem.objects.count(), count)
+
+    def test_owner_adding_again_does_not_reassign_the_first_unit(self):
+        self.act(self.member_a, self.list_item_a, "add_to_basket")
+        self.list_item_a.refresh_from_db()
+        stamp = self.list_item_a.time_put_in_basket
+
+        self.act(self.member_a, self.list_item_a, "add_to_basket")
+
+        self.list_item_a.refresh_from_db()
+        self.assertEqual(self.list_item_a.time_put_in_basket, stamp)
+        self.assertEqual(self.list_item_a.quantity_required, 1)
+
+    def test_other_member_cannot_remove_and_ownership_survives(self):
+        self.act(self.member_a, self.list_item_a, "add_to_basket")
+        response = self.act(
+            self.admin_a, self.list_item_a, "remove_from_basket",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.list_item_a.refresh_from_db()
+        self.assertEqual(self.list_item_a.put_in_basket_by, self.member_a)
+
+    def test_removal_clears_owner_and_next_adder_becomes_owner(self):
+        self.act(self.member_a, self.list_item_a, "add_to_basket")
+        self.act(self.member_a, self.list_item_a, "remove_from_basket")
+        self.list_item_a.refresh_from_db()
+        self.assertFalse(self.list_item_a.in_basket)
+        self.assertIsNone(self.list_item_a.put_in_basket_by)
+
+        self.act(self.admin_a, self.list_item_a, "add_to_basket")
+
+        self.list_item_a.refresh_from_db()
+        self.assertEqual(self.list_item_a.put_in_basket_by, self.admin_a)
+        row = self.row(self.page(self.member_a), self.list_item_a)
+        self.assertIn("In basket: admin_a", row)
+        self.assertNotIn("member_a", row)
+
+    def test_non_owner_sees_disabled_return_and_remove_buttons(self):
+        self.act(self.member_a, self.list_item_a, "add_to_basket")
+        row = self.row(self.page(self.admin_a), self.list_item_a)
+        for action in ('remove_from_basket', 'remove_unit'):
+            button = row.split(f'data-basket-action="{action}"', 1)[1].split('>', 1)[0]
+            self.assertIn('disabled aria-disabled="true"', button)
+        row = self.row(self.page(self.member_a), self.list_item_a)
+        button = row.split('data-basket-action="remove_from_basket"', 1)[1].split('>', 1)[0]
+        self.assertNotIn('disabled', button)
+
+    # --- Buying ---
+
+    def test_buyer_is_shown_and_may_differ_from_basket_owner(self):
+        self.act(self.member_a, self.list_item_a, "add_to_basket")
+        self.client.force_login(self.member_a)
+        self.client.post(self.url_a("shopping_list"), {"action": "buy_basket"}) # noqa
+        self.list_item_a.refresh_from_db()
+        self.assertEqual(self.list_item_a.buyer, self.member_a)
+        self.assertIsNone(self.list_item_a.put_in_basket_by)
+
+        # Buyer attribution is read from `buyer`, never from the basket
+        # owner: a different recorded buyer is displayed as-is.
+        self.item2.buyer = self.admin_a
+        self.item2.date_bought = timezone.now()
+        self.item2.quantity_bought = 1
+        self.item2.put_in_basket_by = self.member_a
+        self.item2.save()
+
+        html = self.page(self.admin_a)
+        bought = html[html.index('id="bought-items-list"'):]
+        row_1 = self.row(bought, self.list_item_a)
+        row_2 = self.row(bought, self.item2)
+        self.assertIn("Bought by member_a", row_1)
+        self.assertIn("Bought by admin_a", row_2)
+        self.assertNotIn("member-color", row_2)
+        self.assertIn("&#10003;", row_1)
+
+    def test_bought_item_cannot_be_basketed_or_cancelled(self):
+        self.list_item_a.date_bought = timezone.now()
+        self.list_item_a.buyer = self.member_a
+        self.list_item_a.save()
+        for action in ("add_to_basket", "cancel"):
+            response = self.act(self.admin_a, self.list_item_a, action)
+            self.assertEqual(response.status_code, 409)
+        self.list_item_a.refresh_from_db()
+        self.assertFalse(self.list_item_a.in_basket)
+        self.assertFalse(self.list_item_a.cancelled)
+
+    # --- Cancel / uncancel ---
+
+    def test_cancel_records_who_and_displays_it(self):
+        self.act(self.member_a, self.list_item_a, "cancel")
+        self.list_item_a.refresh_from_db()
+        self.assertTrue(self.list_item_a.cancelled)
+        self.assertEqual(self.list_item_a.cancelled_by, self.member_a)
+        self.assertIsNotNone(self.list_item_a.date_cancelled)
+        self.assertFalse(self.list_item_a.in_basket)
+        self.assertIsNone(self.list_item_a.put_in_basket_by)
+
+        row = self.row(self.page(self.admin_a), self.list_item_a)
+        self.assertIn('data-state="cancelled"', row)
+        self.assertIn("Cancelled by member_a", row)
+        self.assertNotIn("member-color", row)
+        self.assertNotIn("Bought by", row)
+
+    def test_item_in_basket_cannot_be_cancelled_and_keeps_owner(self):
+        self.act(self.member_a, self.list_item_a, "add_to_basket")
+        response = self.act(self.admin_a, self.list_item_a, "cancel")
+        self.assertEqual(response.status_code, 400)
+        self.list_item_a.refresh_from_db()
+        self.assertFalse(self.list_item_a.cancelled)
+        self.assertEqual(self.list_item_a.put_in_basket_by, self.member_a)
+
+    def test_uncancel_by_another_member_is_attributed_and_basketable(self):
+        self.act(self.member_a, self.list_item_a, "cancel")
+        self.act(self.admin_a, self.list_item_a, "uncancel")
+        self.list_item_a.refresh_from_db()
+        self.assertFalse(self.list_item_a.cancelled)
+        self.assertEqual(self.list_item_a.restored_by, self.admin_a)
+        self.assertIsNone(self.list_item_a.cancelled_by)
+
+        row = self.row(self.page(self.member_a), self.list_item_a)
+        self.assertIn('data-state="ordinary"', row)
+        self.assertIn("Restored by admin_a", row)
+        self.assertNotIn("Cancelled by", row)
+
+        self.act(self.member_a, self.list_item_a, "add_to_basket")
+        self.list_item_a.refresh_from_db()
+        self.assertEqual(self.list_item_a.put_in_basket_by, self.member_a)
+        row = self.row(self.page(self.member_a), self.list_item_a)
+        self.assertNotIn("Restored by", row)
+
+        # Cancelling again clears the previous restoration attribution.
+        self.act(self.member_a, self.list_item_a, "remove_from_basket")
+        self.act(self.admin_a, self.list_item_a, "cancel")
+        self.list_item_a.refresh_from_db()
+        self.assertIsNone(self.list_item_a.restored_by)
+        self.assertEqual(self.list_item_a.cancelled_by, self.admin_a)
+
+    # --- Integrity ---
+
+    def test_cross_family_user_cannot_cancel_or_basket(self):
+        self.client.force_login(self.member_b)
+        for action in ("cancel", "add_to_basket"):
+            response = self.client.post(self.url_b("shopping_list"), {
+                "item_id": self.list_item_a.id, "action": action,
+            })
+            self.assertEqual(response.status_code, 404)
+        self.list_item_a.refresh_from_db()
+        self.assertFalse(self.list_item_a.cancelled)
+        self.assertFalse(self.list_item_a.in_basket)
+
+    def test_closed_list_items_cannot_be_changed(self):
+        ListItem.objects.filter(pk=self.list_item_a.pk).update(current=False)
+        for action in ("add_to_basket", "cancel", "uncancel"):
+            response = self.act(self.member_a, self.list_item_a, action)
+            self.assertEqual(response.status_code, 400)
+        self.list_item_a.refresh_from_db()
+        self.assertIsNone(self.list_item_a.cancelled_by)
+        self.assertFalse(self.list_item_a.in_basket)
+
+    def test_stale_repeat_actions_do_not_change_attribution(self):
+        self.act(self.member_a, self.list_item_a, "cancel")
+        self.act(self.admin_a, self.list_item_a, "cancel")
+        self.list_item_a.refresh_from_db()
+        self.assertEqual(self.list_item_a.cancelled_by, self.member_a)
+
+        self.act(self.admin_a, self.list_item_a, "uncancel")
+        self.act(self.member_a, self.list_item_a, "uncancel")
+        self.list_item_a.refresh_from_db()
+        self.assertEqual(self.list_item_a.restored_by, self.admin_a)
+
+
+class ItemAttributionWebSocketTests(TwoFamilyFixtureMixin, TransactionTestCase):
+    async def _connect(self):
+        communicator = WebsocketCommunicator(
+            ShoppingConsumer.as_asgi(), ws_path(self.family_a),
+        )
+        communicator.scope["user"] = self.member_a
+        communicator.scope["url_route"] = {
+            "kwargs": {"family_slug": self.family_a.slug},
+        }
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+        return communicator
+
+    async def _post(self, user, action):
+        await sync_to_async(self.client.force_login)(user)
+        return await sync_to_async(self.client.post)(
+            self.url_a("shopping_list"),
+            {"item_id": self.list_item_a.id, "action": action},
+        )
+
+    async def test_updates_carry_persisted_state_and_matching_row_html(self):
+        communicator = await self._connect()
+        try:
+            await self._post(self.member_a, "add_to_basket")
+            msg = await communicator.receive_json_from()
+            self.assertEqual(msg["state"], "in_basket")
+            self.assertEqual(msg["owner_id"], self.member_a.id)
+            self.assertEqual(msg["owner_display_name"], "member_a")
+            self.assertIn("member-color-1", msg["row_html"])
+            self.assertIn("In basket: member_a", msg["row_html"])
+
+            # Rejected claim by someone else: nothing changes, and the
+            # persisted state is re-sent so a stale client corrects itself.
+            response = await self._post(self.admin_a, "add_to_basket")
+            self.assertEqual(response.status_code, 409)
+            msg = await communicator.receive_json_from()
+            self.assertEqual(msg["owner_id"], self.member_a.id)
+
+            await self._post(self.member_a, "remove_from_basket")
+            msg = await communicator.receive_json_from()
+            self.assertEqual(msg["state"], "ordinary")
+            self.assertIsNone(msg["owner_id"])
+            self.assertNotIn("member-color", msg["row_html"])
+
+            await self._post(self.member_a, "cancel")
+            msg = await communicator.receive_json_from()
+            self.assertEqual(msg["state"], "cancelled")
+            self.assertEqual(msg["cancelled_by_display_name"], "member_a")
+            self.assertIn("Cancelled by member_a", msg["row_html"])
+            # Cancelling may also send a list-complete notice; drain it.
+            while not await communicator.receive_nothing(timeout=0.2):
+                await communicator.receive_json_from()
+
+            await self._post(self.admin_a, "uncancel")
+            msg = await communicator.receive_json_from()
+            self.assertEqual(msg["state"], "ordinary")
+            self.assertEqual(msg["restored_by_display_name"], "admin_a")
+            self.assertIn("Restored by admin_a", msg["row_html"])
         finally:
             await communicator.disconnect()

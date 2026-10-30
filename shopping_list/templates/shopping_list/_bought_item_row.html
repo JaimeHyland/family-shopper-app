@@ -1,0 +1,6 @@
+{% load i18n_json %}
+<li class="list-group-item item-state-bought" data-item-id="{{ item.id }}" data-state="bought">
+  <span aria-hidden="true">&#10003;</span>
+  {{ item.product.product_name }} ({{ item.unit_count|default:1 }})
+  {% if item.buyer_name %}&mdash; <small class="item-attribution" data-attr-key="shopping_list.attr.bought" data-name="{{ item.buyer_name }}">{% t "shopping_list.attr.bought" name=item.buyer_name %}</small>{% endif %}
+</li>
