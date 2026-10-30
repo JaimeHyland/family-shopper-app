@@ -76,7 +76,7 @@ class RegistrationRequestResult:
 
 
 def request_family_admin_registration(
-    *, family_name: str, email: str,
+    *, family_name: str, email: str, display_name: str = "",
 ) -> Optional[RegistrationRequestResult]:
     """
     Create a pending Family-admin registration for `email`.
@@ -87,9 +87,16 @@ def request_family_admin_registration(
     never discloses account existence. Returns None if a resend cooldown
     is active or (rarely) a concurrent request won the race; callers must
     still present the same generic outcome either way.
+
+    `display_name` is the applicant's own name, as entered at request
+    time; it is carried through to completion (see
+    `complete_family_admin_registration_for_new_user`/
+    `..._for_existing_user`) so it isn't lost even though completion may
+    happen in a different session after the emailed link is opened.
     """
     normalized_email = normalize_email(email)
     family_name = family_name.strip()
+    display_name = (display_name or "").strip()
     now = timezone.now()
 
     with transaction.atomic():
@@ -113,6 +120,7 @@ def request_family_admin_registration(
                 pending = PendingFamilyAdminRegistration.objects.create(
                     email=normalized_email,
                     family_name=family_name,
+                    display_name=display_name,
                     token_digest=digest,
                     expires_at=now + REGISTRATION_TOKEN_LIFETIME,
                 )
@@ -236,7 +244,11 @@ def complete_family_admin_registration_for_new_user(
             username=username, email=pending.email, password=password,
         )
         family = Family.objects.create(name=pending.family_name)
-        chosen_display_name = (display_name or "").strip() or username
+        chosen_display_name = (
+            (display_name or "").strip()
+            or pending.display_name
+            or username
+        )
         membership = FamilyMembership.objects.create(
             user=user, family=family, role=FamilyMembership.Role.ADMIN,
             display_name=chosen_display_name,
@@ -290,7 +302,9 @@ def complete_family_admin_registration_for_existing_user(
 
         family = Family.objects.create(name=pending.family_name)
         chosen_display_name = (
-            (display_name or "").strip() or user.username
+            (display_name or "").strip()
+            or pending.display_name
+            or user.username
         )
         membership = FamilyMembership.objects.create(
             user=user, family=family, role=FamilyMembership.Role.ADMIN,

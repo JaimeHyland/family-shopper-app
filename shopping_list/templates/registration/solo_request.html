@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% load static %}
+
+{% block extra_css %}
+    <link rel="stylesheet" href="{% static 'account.css' %}">
+{% endblock %}
+
+{% block content %}
+
+<div class="container">
+    <h1>Register your own account</h1>
+    <p>Enter your name and your email address. We'll email you a link to finish setting up your account. Your shopping list will belong to you alone.</p> {# noqa #}
+    <form method="post" action="{% url 'solo_registration_request' %}">
+        {% csrf_token %}
+        {{ form.non_field_errors }}
+        <div class="mb-3">
+            <label for="{{ form.name.id_for_label }}" class="form-label">Your name</label> {# noqa #}
+            {{ form.name }}
+            {{ form.name.errors }}
+        </div>
+        <div class="mb-3">
+            <label for="{{ form.email.id_for_label }}" class="form-label">Email address</label> {# noqa #}
+            {{ form.email }}
+            {{ form.email.errors }}
+        </div>
+        <button type="submit" class="btn btn-primary">Register my account</button>
+    </form>
+</div>
+{% endblock %}

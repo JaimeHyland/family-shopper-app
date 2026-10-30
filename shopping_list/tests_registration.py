@@ -29,11 +29,11 @@ class LoginTemplateTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, "account/login.html")
-        registration_url = reverse("logged_out_homepage")
+        registration_url = reverse("registration_start")
         self.assertContains(
             response,
             f'<a class="link" href="{registration_url}">'
-            "register your family</a>",
+            "register</a>",
             html=True,
         )
 
@@ -63,10 +63,14 @@ class LoginTemplateTests(TestCase):
 
 
 class HomepageRoutingTests(TestCase):
-    def test_anonymous_get_root_shows_registration_homepage(self):
+    def test_anonymous_get_root_shows_welcome_page_with_two_choices(self):
         response = self.client.get(reverse("logged_out_homepage"))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Register your family")
+        self.assertContains(response, "I'm new here")
+        self.assertContains(response, "I already have an account")
+        # The welcome page must not contain the registration form itself.
+        self.assertNotContains(response, "Family name")
+        self.assertNotContains(response, "<form")
 
     def test_authenticated_user_with_one_membership_is_redirected(self):
         family = Family.objects.create(name="Redirect Family")
@@ -141,7 +145,8 @@ class HomepageRoutingTests(TestCase):
 
 class RegistrationRequestViewTests(TestCase):
     def test_blank_family_name_creates_no_pending_registration(self):
-        self.client.post(reverse("logged_out_homepage"), {
+        self.client.post(reverse("family_registration_request"), {
+            "admin_name": "Someone",
             "family_name": "",
             "email": "someone@example.com",
         })
@@ -149,15 +154,28 @@ class RegistrationRequestViewTests(TestCase):
         self.assertEqual(len(mail.outbox), 0)
 
     def test_invalid_email_creates_no_pending_registration(self):
-        self.client.post(reverse("logged_out_homepage"), {
+        self.client.post(reverse("family_registration_request"), {
+            "admin_name": "Someone",
             "family_name": "Some Family",
             "email": "not-an-email",
         })
         self.assertEqual(PendingFamilyAdminRegistration.objects.count(), 0)
         self.assertEqual(len(mail.outbox), 0)
 
+    def test_blank_admin_name_creates_no_pending_registration(self):
+        # The registering person's own name is required at request time
+        # so it is never lost by the time completion happens.
+        self.client.post(reverse("family_registration_request"), {
+            "admin_name": "",
+            "family_name": "Some Family",
+            "email": "noname@example.com",
+        })
+        self.assertEqual(PendingFamilyAdminRegistration.objects.count(), 0)
+        self.assertEqual(len(mail.outbox), 0)
+
     def test_valid_request_sends_one_email_and_creates_no_account_yet(self):
-        response = self.client.post(reverse("logged_out_homepage"), {
+        response = self.client.post(reverse("family_registration_request"), {
+            "admin_name": "New Admin",
             "family_name": "New Family",
             "email": "New.Admin@Example.com",
         })
@@ -170,7 +188,8 @@ class RegistrationRequestViewTests(TestCase):
         self.assertEqual(FamilyMembership.objects.count(), 0)
 
     def test_pending_registration_stores_only_the_token_digest(self):
-        self.client.post(reverse("logged_out_homepage"), {
+        self.client.post(reverse("family_registration_request"), {
+            "admin_name": "Digest Admin",
             "family_name": "Digest Family",
             "email": "digest@example.com",
         })
@@ -194,7 +213,8 @@ class RegistrationRequestViewTests(TestCase):
             family=family, user=user, display_name="Existing",
         )
 
-        response = self.client.post(reverse("logged_out_homepage"), {
+        response = self.client.post(reverse("family_registration_request"), {
+            "admin_name": "Existing Admin",
             "family_name": "Whatever",
             "email": "existing@example.com",
         })
@@ -222,6 +242,250 @@ class RegistrationRequestViewTests(TestCase):
             ).count(),
             1,
         )
+
+
+class RegistrationStartViewTests(TestCase):
+    def test_anonymous_get_shows_solo_and_family_choices(self):
+        response = self.client.get(reverse("registration_start"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "I'll be using the app alone")
+        self.assertContains(response, "I'll be using the app with my family") # noqa
+        self.assertContains(
+            response, f'href="{reverse("solo_registration_request")}"',
+        )
+        self.assertContains(
+            response, f'href="{reverse("family_registration_request")}"',
+        )
+
+    def test_authenticated_user_is_redirected_away(self):
+        family = Family.objects.create(name="Redirect Family")
+        user = User.objects.create_user(
+            username="start_member", password="pass1234",
+        )
+        FamilyMembership.objects.create(
+            family=family, user=user, display_name="Member",
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(reverse("registration_start"))
+
+        self.assertRedirects(
+            response,
+            reverse("shopping_list", kwargs={"family_slug": family.slug}), # noqa
+        )
+
+
+class SoloRegistrationRequestViewTests(TestCase):
+    def test_get_shows_name_and_email_form(self):
+        response = self.client.get(reverse("solo_registration_request"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Your name")
+
+    def test_blank_name_creates_no_pending_registration(self):
+        self.client.post(reverse("solo_registration_request"), {
+            "name": "",
+            "email": "soloblank@example.com",
+        })
+        self.assertEqual(PendingFamilyAdminRegistration.objects.count(), 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_valid_request_sends_one_email_and_creates_no_account_yet(self):
+        response = self.client.post(reverse("solo_registration_request"), {
+            "name": "Jaime Hyland",
+            "email": "solo.new@example.com",
+        })
+
+        self.assertRedirects(response, reverse("registration_check_email"))
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(User.objects.count(), 0)
+        self.assertEqual(Family.objects.count(), 0)
+
+        pending = PendingFamilyAdminRegistration.objects.get(
+            email="solo.new@example.com",
+        )
+        # The pending "family name" is simply the person's own name; this
+        # is what makes the resulting solo family named after its user.
+        self.assertEqual(pending.family_name, "Jaime Hyland")
+
+    def test_completion_creates_a_solo_family_named_after_the_user(self):
+        result = request_family_admin_registration(
+            family_name="Jaime Hyland", email="solo.complete@example.com",
+        )
+
+        response = self.client.post(
+            reverse(
+                "registration_complete",
+                kwargs={"token": result.raw_token},
+            ),
+            {
+                "username": "solo_user",
+                "password1": "a-very-strong-password-99",
+                "password2": "a-very-strong-password-99",
+                "display_name": "",
+            },
+        )
+
+        family = Family.objects.get(name="Jaime Hyland")
+        self.assertRedirects(
+            response,
+            reverse("seed_lists", kwargs={"family_slug": family.slug}), # noqa
+        )
+        self.assertEqual(family.memberships.count(), 1)
+        membership = family.memberships.get()
+        self.assertEqual(membership.user.username, "solo_user")
+        self.assertEqual(membership.role, FamilyMembership.Role.ADMIN)
+
+
+class ApplicantNameCarriedThroughTests(TestCase):
+    """
+    The applicant's own name, entered at request time (solo or family),
+    must survive to completion -- it must not be silently dropped in
+    favour of the username just because the account didn't exist yet
+    when the name was typed.
+    """
+
+    def _raw_token_from_outbox(self):
+        return mail.outbox[-1].body.split("verify/")[1].split("/")[0]
+
+    def test_family_request_stores_the_admins_name_on_the_pending_registration(self): # noqa
+        self.client.post(reverse("family_registration_request"), {
+            "admin_name": "Jamie Doe",
+            "family_name": "Doe Family",
+            "email": "jamie@example.com",
+        })
+
+        pending = PendingFamilyAdminRegistration.objects.get(
+            email="jamie@example.com",
+        )
+        self.assertEqual(pending.display_name, "Jamie Doe")
+
+    def test_solo_request_stores_the_persons_name_on_the_pending_registration(self): # noqa
+        self.client.post(reverse("solo_registration_request"), {
+            "name": "Solo Person",
+            "email": "solo.carry@example.com",
+        })
+
+        pending = PendingFamilyAdminRegistration.objects.get(
+            email="solo.carry@example.com",
+        )
+        self.assertEqual(pending.display_name, "Solo Person")
+
+    def test_completion_form_is_prefilled_with_the_stored_name(self):
+        result = request_family_admin_registration(
+            family_name="Doe Family", email="jamie2@example.com",
+            display_name="Jamie Doe",
+        )
+
+        response = self.client.get(
+            reverse(
+                "registration_complete", kwargs={"token": result.raw_token},
+            ),
+        )
+
+        self.assertContains(response, 'value="Jamie Doe"')
+
+    def test_leaving_display_name_blank_at_completion_keeps_the_original_name(self): # noqa
+        result = request_family_admin_registration(
+            family_name="Doe Family", email="jamie3@example.com",
+            display_name="Jamie Doe",
+        )
+
+        response = self.client.post(
+            reverse(
+                "registration_complete", kwargs={"token": result.raw_token},
+            ),
+            {
+                "username": "jamie_user",
+                "password1": "a-very-strong-password-99",
+                "password2": "a-very-strong-password-99",
+                "display_name": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        membership = FamilyMembership.objects.get(
+            user__username="jamie_user",
+        )
+        self.assertEqual(membership.display_name, "Jamie Doe")
+
+    def test_full_solo_journey_keeps_the_name_without_retyping_it(self):
+        self.client.post(reverse("solo_registration_request"), {
+            "name": "Solo Person",
+            "email": "solo.journey@example.com",
+        })
+        raw_token = self._raw_token_from_outbox()
+
+        response = self.client.post(
+            reverse("registration_complete", kwargs={"token": raw_token}),
+            {
+                "username": "solo_journey_user",
+                "password1": "a-very-strong-password-99",
+                "password2": "a-very-strong-password-99",
+                "display_name": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        membership = FamilyMembership.objects.get(
+            user__username="solo_journey_user",
+        )
+        self.assertEqual(membership.display_name, "Solo Person")
+
+
+class NavigationAuthStateTests(TestCase):
+    """
+    The nav bar and the "logged in as .../not logged in" message must
+    never contradict each other -- in particular, an anonymous visitor
+    must never be offered "Log out".
+    """
+
+    def test_anonymous_visitor_sees_consistent_logged_out_state(self):
+        response = self.client.get(reverse("registration_start"))
+
+        self.assertContains(response, "You are not logged in")
+        self.assertNotContains(response, ">Log out<")
+        self.assertContains(response, ">Log in<")
+
+    def test_anonymous_visitor_on_family_request_page_sees_consistent_state(self): # noqa
+        response = self.client.get(reverse("family_registration_request"))
+
+        self.assertContains(response, "You are not logged in")
+        self.assertNotContains(response, ">Log out<")
+
+    def test_anonymous_visitor_on_solo_request_page_sees_consistent_state(self): # noqa
+        response = self.client.get(reverse("solo_registration_request"))
+
+        self.assertContains(response, "You are not logged in")
+        self.assertNotContains(response, ">Log out<")
+
+    def test_authenticated_ordinary_member_sees_consistent_logged_in_state(self): # noqa
+        family = Family.objects.create(name="Nav Family")
+        user = User.objects.create_user(
+            username="nav_child", password="pass1234",
+        )
+        FamilyMembership.objects.create(
+            family=family, user=user, display_name="Child",
+            role=FamilyMembership.Role.MEMBER,
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse("shopping_list", kwargs={"family_slug": family.slug}),
+        )
+
+        self.assertContains(response, "You are logged in as nav_child")
+        self.assertContains(response, "Logout")
+
+
+class FamilyChooserAccessTests(TestCase):
+    def test_anonymous_visitor_is_redirected_to_login_instead_of_shown_the_page(self): # noqa
+        response = self.client.get(reverse("family_chooser"))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse("logged_out_homepage"), response["Location"])
+        self.assertIn("next=", response["Location"])
 
 
 class RegistrationCompletionViewTests(TestCase):
@@ -270,7 +534,7 @@ class RegistrationCompletionViewTests(TestCase):
         family = Family.objects.get(name="Successful Family")
         self.assertRedirects(
             response,
-            reverse("shopping_list", kwargs={"family_slug": family.slug}), # noqa
+            reverse("seed_lists", kwargs={"family_slug": family.slug}), # noqa
         )
         self.assertEqual(User.objects.filter(username="new_family_admin").count(), 1) # noqa
 
@@ -477,7 +741,7 @@ class ExistingEmailRegistrationTests(TestCase):
         new_family = Family.objects.get(name="Second Family")
         self.assertRedirects(
             response,
-            reverse("shopping_list", kwargs={"family_slug": new_family.slug}), # noqa
+            reverse("seed_lists", kwargs={"family_slug": new_family.slug}), # noqa
         )
         memberships = FamilyMembership.objects.filter(user=self.existing_user) # noqa
         self.assertEqual(memberships.count(), 2)

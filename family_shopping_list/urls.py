@@ -36,6 +36,21 @@ class FaviconRedirectView(RedirectView):
 urlpatterns = [
     path('', registration_views.HomeView.as_view(), name='logged_out_homepage'), # noqa
     path(
+        'register/',
+        registration_views.RegistrationStartView.as_view(),
+        name='registration_start',
+    ),
+    path(
+        'register/family/',
+        registration_views.FamilyRegistrationRequestView.as_view(),
+        name='family_registration_request',
+    ),
+    path(
+        'register/solo/',
+        registration_views.SoloRegistrationRequestView.as_view(),
+        name='solo_registration_request',
+    ),
+    path(
         'families/choose/',
         registration_views.FamilyChooserView.as_view(),
         name='family_chooser',

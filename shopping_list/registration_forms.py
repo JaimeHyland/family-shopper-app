@@ -7,11 +7,28 @@ from django.contrib.auth.validators import UnicodeUsernameValidator
 class FamilyAdminRegistrationRequestForm(forms.Form):
     """Stage 1: request registration with a family name and an email."""
 
+    admin_name = forms.CharField(max_length=100, label="Your name")
     family_name = forms.CharField(max_length=100)
     email = forms.EmailField()
 
+    def clean_admin_name(self):
+        return self.cleaned_data["admin_name"].strip()
+
     def clean_family_name(self):
         return self.cleaned_data["family_name"].strip()
+
+    def clean_email(self):
+        return self.cleaned_data["email"].strip().lower()
+
+
+class SoloRegistrationRequestForm(forms.Form):
+    """Stage 1 of solo registration: the person's own name and an email."""
+
+    name = forms.CharField(max_length=100, label="Your name")
+    email = forms.EmailField()
+
+    def clean_name(self):
+        return self.cleaned_data["name"].strip()
 
     def clean_email(self):
         return self.cleaned_data["email"].strip().lower()
