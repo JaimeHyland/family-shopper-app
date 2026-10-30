@@ -1,14 +1,8 @@
 from django import template
-from utilities.utils import is_adult
 from shopping_list.models import FamilyMembership
 
 
 register = template.Library()
-
-
-@register.filter
-def is_adult_filter(user):
-    return is_adult(user)
 
 
 @register.filter

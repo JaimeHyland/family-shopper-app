@@ -10,7 +10,7 @@ from .models import (
 )
 from .forms import CategoryForm, ProductForm, ShopForm
 from .templatetags.custom_filters import member_display_name
-from utilities.utils import is_adult
+from utilities.utils import is_adult, is_family_admin
 import logging
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -1217,7 +1217,7 @@ class ProductView(FamilyMembershipRequiredMixin, View):
         product = get_object_or_404(
             Product, slug=slug, family=request.family,
         )
-        if not is_adult(request.user):
+        if not is_family_admin(request):
             raise PermissionDenied
         form = ProductForm(
             request.POST, instance=product, family=request.family,
@@ -1251,7 +1251,7 @@ class ShopView(FamilyMembershipRequiredMixin, View):
     def post(self, request, *args, **kwargs):
         slug = self.kwargs.get('slug')
         shop = get_object_or_404(Shop, slug=slug, family=request.family)
-        if not is_adult(request.user):
+        if not is_family_admin(request):
             raise PermissionDenied
         form = ShopForm(request.POST, instance=shop, family=request.family)
         if form.is_valid():
@@ -1323,7 +1323,7 @@ class ProductDeleteView(FamilyMembershipRequiredMixin, View):
         product = get_object_or_404(
             Product, slug=slug, family=request.family,
         )
-        if not is_adult(request.user):
+        if not is_family_admin(request):
             raise PermissionDenied
         product.current = False
         product.save()
@@ -1356,7 +1356,7 @@ class ShopDeleteView(FamilyMembershipRequiredMixin, View):
     def post(self, request, *args, **kwargs):
         slug = self.kwargs.get('slug')
         shop = get_object_or_404(Shop, slug=slug, family=request.family)
-        if not is_adult(request.user):
+        if not is_family_admin(request):
             raise PermissionDenied
 
         affected_products = Product.objects.filter(
@@ -1537,7 +1537,7 @@ class ResolveShoppingListDuplicateView(FamilyMembershipRequiredMixin, View):
                         request, product, existing_item,
                     )
                 else:
-                    if not is_adult(request.user):
+                    if not is_family_admin(request):
                         raise PermissionDenied(
                             "Ask a family admin to create a new product "
                             "variant."

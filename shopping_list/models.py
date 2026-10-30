@@ -118,16 +118,6 @@ class FamilyMembership(models.Model):
         )
 
 
-class AutomaticAdultGroupMembership(models.Model):
-    """Tracks adult-group membership granted by an application rule."""
-
-    user = models.OneToOneField(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="automatic_adult_group_membership",
-    )
-
-
 class PendingFamilyAdminRegistration(models.Model):
     """
     A not-yet-completed public self-registration request for a new Family

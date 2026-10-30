@@ -1,4 +1,4 @@
-from django.contrib.auth.models import Group, User
+from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase, TransactionTestCase
@@ -10,6 +10,7 @@ from asgiref.sync import sync_to_async
 from channels.testing import WebsocketCommunicator
 
 from family_shopping_list.consumers import ShoppingConsumer
+from utilities.utils import is_family_admin
 from .forms import CategoryForm, ProductForm, ShopForm
 from .views import (
     GROUP_BY_DIMENSIONS,
@@ -17,7 +18,6 @@ from .views import (
     group_shopping_list_items,
 )
 from .models import (
-    AutomaticAdultGroupMembership,
     Category,
     Family,
     FamilyMembership,
@@ -1616,101 +1616,70 @@ class SuperuserWithoutMembershipTests(TestCase):
         self.assertEqual(response.status_code, 403)
 
 
-class AdultGroupLifecycleTests(TestCase):
+class FamilyAdminPrivilegeTests(TestCase):
+    """Replaces the retired AdultGroupLifecycleTests. Family-administrator
+    authority is now determined solely by FamilyMembership.role for the
+    family being acted on (see utilities.utils.is_family_admin) - there is
+    no global adult/child Django Group or signal-driven membership
+    involved any more. Cross-family isolation and the superuser-as-
+    ordinary-member case for a SECOND family are covered by
+    CrossFamilyAdminPrivilegeTests below."""
+
     def setUp(self):
-        self.adult_group, _ = Group.objects.get_or_create(name="adult")
-        self.family = Family.objects.create(name="Adult Group Family")
+        self.family = Family.objects.create(name="Family Admin Family")
 
-    def test_new_superuser_is_added_to_adult_group(self):
-        user = User.objects.create_superuser(
-            username="new_root", password="pass1234",
+    def test_admin_role_grants_catalogue_privileges_immediately(self):
+        user = User.objects.create_user(username="role_admin")
+        category = Category.objects.create(
+            category_name="Role Category", family=self.family, creator=user,
         )
-
-        self.assertTrue(user.groups.filter(pk=self.adult_group.pk).exists())
-        self.assertTrue(
-            AutomaticAdultGroupMembership.objects.filter(user=user).exists(),
+        shop = Shop.objects.create(
+            shop_name="Role Shop", family=self.family, creator=user,
+            type_of_shop=1,
         )
-
-    def test_promoted_superuser_is_added_to_adult_group(self):
-        user = User.objects.create_user(
-            username="promoted_root", password="pass1234",
+        membership = FamilyMembership.objects.create(
+            family=self.family, user=user,
+            role=FamilyMembership.Role.ADMIN, display_name="Role Admin",
         )
-        user.is_superuser = True
-        user.save(update_fields=["is_superuser"])
+        self.client.force_login(user)
 
-        self.assertTrue(user.groups.filter(pk=self.adult_group.pk).exists())
+        response = self.client.post(family_url(self.family, "add_product"), { # noqa
+            "product_name": "Admin Added Product", "category": category.pk,
+            "default_shop": shop.pk, "default_quantity": 1,
+            "default_unit": "item",
+        })
 
-    def test_family_admin_is_added_to_adult_group(self):
-        user = User.objects.create_user(
-            username="family_admin", password="pass1234",
-        )
+        self.assertRedirects(response, family_url(self.family, "product_list")) # noqa
+        self.assertTrue(Product.objects.filter(
+            family=self.family, product_name="Admin Added Product",
+        ).exists())
+
+        # Demoting takes effect on the very next request - no signal and
+        # no cached group membership to synchronise. A second admin must
+        # exist first: the last-administrator invariant would otherwise
+        # reject this demotion.
         FamilyMembership.objects.create(
-            family=self.family,
-            user=user,
-            role=FamilyMembership.Role.ADMIN,
-            display_name="Family Admin",
+            family=self.family, user=User.objects.create_user(
+                username="role_admin_backup",
+            ), role=FamilyMembership.Role.ADMIN,
+            display_name="Backup Admin",
         )
-
-        self.assertTrue(user.groups.filter(pk=self.adult_group.pk).exists())
-
-    def test_family_admin_promotion_and_demotion_are_synchronised(self):
-        user = User.objects.create_user(
-            username="role_change", password="pass1234",
-        )
-        membership = FamilyMembership.objects.create(
-            family=self.family,
-            user=user,
-            display_name="Role Change",
-        )
-        self.assertFalse(user.groups.filter(pk=self.adult_group.pk).exists())
-
-        membership.role = FamilyMembership.Role.ADMIN
-        membership.save(update_fields=["role"])
-        self.assertTrue(user.groups.filter(pk=self.adult_group.pk).exists())
-
-        membership.role = FamilyMembership.Role.MEMBER
-        membership.save(update_fields=["role"])
-        self.assertFalse(user.groups.filter(pk=self.adult_group.pk).exists())
-
-    def test_demoting_admin_preserves_preexisting_adult_membership(self):
-        user = User.objects.create_user(
-            username="existing_adult", password="pass1234",
-        )
-        user.groups.add(self.adult_group)
-        membership = FamilyMembership.objects.create(
-            family=self.family,
-            user=user,
-            role=FamilyMembership.Role.ADMIN,
-            display_name="Existing Adult",
-        )
-
         membership.role = FamilyMembership.Role.MEMBER
         membership.save(update_fields=["role"])
 
-        self.assertTrue(user.groups.filter(pk=self.adult_group.pk).exists())
-        self.assertFalse(
-            AutomaticAdultGroupMembership.objects.filter(user=user).exists(),
-        )
+        self.assertEqual(self.client.post(
+            family_url(self.family, "add_product"), {
+                "product_name": "Should Be Blocked", "category": category.pk,
+                "default_shop": shop.pk, "default_quantity": 1,
+                "default_unit": "item",
+            },
+        ).status_code, 403)
+        self.assertFalse(Product.objects.filter(
+            family=self.family, product_name="Should Be Blocked",
+        ).exists())
 
-    def test_superuser_remains_adult_after_admin_membership_is_removed(self):
-        user = User.objects.create_superuser(
-            username="super_admin", password="pass1234",
-        )
-        membership = FamilyMembership.objects.create(
-            family=self.family,
-            user=user,
-            role=FamilyMembership.Role.ADMIN,
-            display_name="Super Admin",
-        )
-
-        membership.delete()
-
-        self.assertTrue(user.groups.filter(pk=self.adult_group.pk).exists())
-
-    def test_non_adult_cannot_add_or_edit_products_or_shops(self):
-        user = User.objects.create_user(
-            username="ordinary_member", password="pass1234",
-        )
+    def test_ordinary_member_cannot_add_or_edit_products_or_shops(self):
+        user = User.objects.create_user(username="ordinary_member")
         category = Category.objects.create(
             category_name="Existing Category",
             family=self.family,
@@ -1783,6 +1752,297 @@ class AdultGroupLifecycleTests(TestCase):
             ).status_code,
             403,
         )
+
+        # Ordinary members still use the application normally - no
+        # adult/child role gates this, only membership itself.
+        self.assertEqual(self.client.get(
+            family_url(self.family, "shopping_list"),
+        ).status_code, 200)
+
+    def test_superuser_is_not_automatically_a_family_admin(self):
+        superuser = User.objects.create_superuser(
+            username="root_in_family", email="root@example.com",
+        )
+        FamilyMembership.objects.create(
+            family=self.family, user=superuser, display_name="Root",
+        )
+        self.client.force_login(superuser)
+
+        response = self.client.post(family_url(self.family, "add_product"), { # noqa
+            "product_name": "Should Be Blocked",
+            "category": "", "default_shop": "",
+            "default_quantity": 1, "default_unit": "item",
+        })
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(Product.objects.filter(
+            family=self.family, product_name="Should Be Blocked",
+        ).exists())
+
+    def test_password_management_and_logout_remain_available(self):
+        user = User.objects.create_user(username="ordinary_password_user")
+        FamilyMembership.objects.create(
+            family=self.family, user=user, display_name="Ordinary",
+        )
+        self.client.force_login(user)
+
+        change_password = self.client.get(
+            reverse("account_change_password"),
+        )
+        self.assertEqual(change_password.status_code, 200)
+
+        page = self.client.get(family_url(self.family, "shopping_list"))
+        self.assertContains(page, "Logout")
+        self.assertContains(page, reverse("account_change_password"))
+
+    def test_family_admin_wording_replaces_the_retired_parental_wording(self): # noqa
+        user = User.objects.create_user(username="wording_member")
+        FamilyMembership.objects.create(
+            family=self.family, user=user, display_name="Member",
+        )
+        self.client.force_login(user)
+
+        page = self.client.get(family_url(self.family, "product_list"))
+
+        self.assertContains(page, "Ask a family admin to add a new product") # noqa
+        self.assertNotContains(page, "Ask your parents")
+
+    def test_removing_the_legacy_signal_machinery_does_not_break_membership_lifecycle(self): # noqa
+        # Creating/updating/deleting Users and FamilyMemberships must not
+        # raise: there is no dangling post_save/post_delete receiver left
+        # importing the removed AutomaticAdultGroupMembership model. A
+        # second admin is required so the last-administrator invariant
+        # (unrelated to the retired signal machinery) doesn't reject the
+        # demotion/removal being exercised here.
+        FamilyMembership.objects.create(
+            family=self.family, user=User.objects.create_user(
+                username="lifecycle_backup_admin",
+            ), role=FamilyMembership.Role.ADMIN,
+            display_name="Lifecycle Backup Admin",
+        )
+        user = User.objects.create_user(username="lifecycle_user")
+        membership = FamilyMembership.objects.create(
+            family=self.family, user=user, display_name="Lifecycle",
+            role=FamilyMembership.Role.ADMIN,
+        )
+        membership.role = FamilyMembership.Role.MEMBER
+        membership.save(update_fields=["role"])
+        membership.delete()
+        user.delete()
+
+        self.assertFalse(FamilyMembership.objects.filter(
+            display_name="Lifecycle",
+        ).exists())
+
+
+class CrossFamilyAdminPrivilegeTests(TwoFamilyTestCase):
+    """Regression coverage for the cross-family administrator privilege
+    leak: `is_adult()`/the global "adult" Django Group used to grant
+    catalogue-management privileges based on ANY family admin membership,
+    or on `is_superuser`, regardless of the family actually being acted
+    on. The fix (`utilities.utils.is_family_admin`) checks only
+    `request.family_membership.is_family_admin` for the specific family
+    resolved by `FamilyMembershipRequiredMixin`."""
+
+    def setUp(self):
+        super().setUp()
+        # admin_a administers family_a (from the base fixture) and is
+        # ALSO an ordinary member of family_b - the scenario this fix
+        # targets.
+        FamilyMembership.objects.create(
+            family=self.family_b, user=self.admin_a,
+            display_name="Admin A in Family B",
+        )
+        # A second user who is an ordinary member of BOTH families. No
+        # password needed; only ever authenticated via force_login.
+        self.both_member = User.objects.create_user(username="both_member")
+        FamilyMembership.objects.create(
+            family=self.family_a, user=self.both_member,
+            display_name="Both A",
+        )
+        FamilyMembership.objects.create(
+            family=self.family_b, user=self.both_member,
+            display_name="Both B",
+        )
+
+    def _attempt_admin_only_operations(self, family, product, shop):
+        """POSTs every admin-only product/shop/variant operation against
+        `family` with the currently logged-in client and returns the list
+        of response status codes, in a fixed order."""
+        add_product = self.client.post(
+            family_url(family, "add_product"), {
+                "product_name": "Should Be Blocked",
+                "category": "", "default_shop": "",
+                "default_quantity": 1, "default_unit": "item",
+            },
+        )
+        edit_product = self.client.post(
+            family_url(family, "product_detail", slug=product.slug), {
+                "product_name": "Renamed By Intruder",
+                "category": product.category_id or "",
+                "default_shop": product.default_shop_id or "",
+                "default_quantity": 1, "default_unit": "item",
+            },
+        )
+        delete_product = self.client.post(
+            family_url(family, "product_delete", slug=product.slug),
+        )
+        add_shop = self.client.post(
+            family_url(family, "add_shop"),
+            {"shop_name": "Should Be Blocked", "type_of_shop": 1},
+        )
+        edit_shop = self.client.post(
+            family_url(family, "shop_detail", slug=shop.slug),
+            {"shop_name": "Renamed By Intruder", "type_of_shop": 1},
+        )
+        delete_shop = self.client.post(
+            family_url(family, "shop_delete", slug=shop.slug),
+        )
+        self.client.post(family_url(family, "add_to_shopping_list"), {
+            "selected-products": [product.id],
+        })
+        create_variant = self.client.post(
+            family_url(family, "resolve_shopping_list_duplicate"), {
+                "product_id": product.id, "choice": "create_variant",
+                "variant_name": "Intruder Variant",
+            },
+        )
+        return [
+            r.status_code for r in (
+                add_product, edit_product, delete_product,
+                add_shop, edit_shop, create_variant,
+            )
+        ]
+
+    def test_admin_retains_their_own_family_privileges(self):
+        self.client.force_login(self.admin_a)
+
+        response = self.client.post(family_url(self.family_a, "add_product"), { # noqa
+            "product_name": "Legitimate New Product",
+            "category": self.category_a.pk, "default_shop": self.shop_a.pk,
+            "default_quantity": 1, "default_unit": "item",
+        })
+
+        self.assertRedirects(response, self.url_a("product_list"))
+        self.assertTrue(Product.objects.filter(
+            family=self.family_a, product_name="Legitimate New Product",
+        ).exists())
+
+    def test_admin_of_one_family_gets_no_admin_privileges_in_another(self):
+        self.client.force_login(self.admin_a)
+
+        statuses = self._attempt_admin_only_operations(
+            self.family_b, self.product_b, self.shop_b,
+        )
+
+        self.assertEqual(statuses, [403] * len(statuses))
+        self.product_b.refresh_from_db()
+        self.shop_b.refresh_from_db()
+        self.assertTrue(self.product_b.current)
+        self.assertEqual(self.product_b.product_name, "Product B")
+        self.assertTrue(self.shop_b.current)
+        self.assertEqual(self.shop_b.shop_name, "Shop B")
+        self.assertFalse(Product.objects.filter(
+            family=self.family_b, product_name__in=[
+                "Should Be Blocked", "Intruder Variant",
+            ],
+        ).exists())
+        self.assertFalse(Shop.objects.filter(
+            family=self.family_b, shop_name="Should Be Blocked",
+        ).exists())
+
+    def test_admin_of_one_family_keeps_ordinary_member_rights_in_another(self): # noqa
+        self.client.force_login(self.admin_a)
+
+        response = self.client.get(self.url_b("shopping_list"))
+        self.assertEqual(response.status_code, 200)
+
+        # self.product_b is already on the list (base fixture); use a
+        # fresh product so the ordinary "add to list" action succeeds
+        # directly rather than hitting the separate duplicate-conflict
+        # prompt (a different, already-covered code path).
+        fresh_product = Product.objects.create(
+            product_name="Fresh Product B", family=self.family_b,
+            category=self.category_b, default_shop=self.shop_b,
+            creator=self.admin_b,
+        )
+        add_response = self.client.post(
+            family_url(self.family_b, "add_to_shopping_list"),
+            {"selected-products": [fresh_product.id]},
+        )
+        self.assertRedirects(add_response, self.url_b("shopping_list"))
+        self.assertTrue(ListItem.objects.filter(
+            family=self.family_b, product=fresh_product,
+        ).exists())
+
+    def test_member_of_both_families_gets_no_admin_privileges_in_either(self): # noqa
+        self.client.force_login(self.both_member)
+
+        statuses_a = self._attempt_admin_only_operations(
+            self.family_a, self.product_a, self.shop_a,
+        )
+        statuses_b = self._attempt_admin_only_operations(
+            self.family_b, self.product_b, self.shop_b,
+        )
+
+        self.assertEqual(statuses_a, [403] * len(statuses_a))
+        self.assertEqual(statuses_b, [403] * len(statuses_b))
+
+    def test_single_family_admin_behaviour_is_unaffected(self):
+        # admin_b has no membership at all in family_a: the ordinary,
+        # most common case, confirming nothing regressed for it.
+        self.client.force_login(self.admin_b)
+
+        response = self.client.post(family_url(self.family_b, "add_product"), { # noqa
+            "product_name": "Ordinary Admin Product",
+            "category": self.category_b.pk, "default_shop": self.shop_b.pk,
+            "default_quantity": 1, "default_unit": "item",
+        })
+
+        self.assertRedirects(response, self.url_b("product_list"))
+        self.assertTrue(Product.objects.filter(
+            family=self.family_b, product_name="Ordinary Admin Product",
+        ).exists())
+
+    def test_superuser_status_grants_no_admin_privilege_as_an_ordinary_member(self): # noqa
+        # The removed `is_adult()` path also treated is_superuser as an
+        # automatic "adult" grant, independent of family role; closing
+        # the cross-family leak closes this adjacent leak too, since both
+        # went through the same call sites.
+        superuser = User.objects.create_superuser(
+            username="root_member", email="root@example.com",
+        )
+        FamilyMembership.objects.create(
+            family=self.family_a, user=superuser, display_name="Root",
+        )
+        self.client.force_login(superuser)
+
+        statuses = self._attempt_admin_only_operations(
+            self.family_a, self.product_a, self.shop_a,
+        )
+
+        self.assertEqual(statuses, [403] * len(statuses))
+
+    def test_missing_family_context_is_denied_not_granted_globally(self):
+        # Direct unit coverage of the fail-safe helper itself: a request
+        # reached without the expected family-scoped context (no
+        # `family_membership` attribute at all) must be denied, never
+        # fall back to a broader/global privilege check.
+        bare_request = SimpleNamespace()
+        self.assertFalse(is_family_admin(bare_request))
+
+        admin_request = SimpleNamespace(family_membership=FamilyMembership(
+            role=FamilyMembership.Role.ADMIN,
+        ))
+        self.assertTrue(is_family_admin(admin_request))
+
+        member_request = SimpleNamespace(family_membership=FamilyMembership(
+            role=FamilyMembership.Role.MEMBER,
+        ))
+        self.assertFalse(is_family_admin(member_request))
+
+        none_request = SimpleNamespace(family_membership=None)
+        self.assertFalse(is_family_admin(none_request))
 
 
 class WebSocketFamilyIsolationTests(TwoFamilyFixtureMixin, TransactionTestCase):

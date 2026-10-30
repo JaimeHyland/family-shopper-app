@@ -1,11 +1,10 @@
 {% extends "base.html" %}
 
-{% load custom_filters %}
 {% load crispy_forms_tags %}
 
 {% block content %}
 
-{% if user|is_adult_filter %}
+{% if request.family_membership.is_family_admin %}
 <div class="product detail">
     <form method="post" action="" class="w-100">
         {% csrf_token %}

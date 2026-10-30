@@ -934,3 +934,76 @@ class UnitMigrationTests(TransactionTestCase):
         # No explicit atomic block or forced rollback: the executor must
         # restore rows, cloned records, schema and migration bookkeeping.
         self.assert_failed_migration_restored_before_state(snapshot)
+
+
+class AdultGroupRemovalMigrationTests(TransactionTestCase):
+    """Forward coverage for 0049_remove_adult_group, run against an
+    isolated migration state (never the working development database).
+    The migration is intentionally forward-only (see its own
+    docstring), so there is no reverse-restoration behaviour to test."""
+
+    before = [('shopping_list', '0048_remove_automatic_adult_group_membership')] # noqa
+    after = [('shopping_list', '0049_remove_adult_group')]
+
+    def setUp(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.before)
+        apps = executor.loader.project_state(self.before).apps
+        Group = apps.get_model('auth', 'Group')
+        Permission = apps.get_model('auth', 'Permission')
+        User = apps.get_model('auth', 'User')
+
+        self.member_a = User.objects.create(username='adult_member_a')
+        self.member_b = User.objects.create(username='adult_member_b')
+        self.unrelated_user = User.objects.create(username='unrelated_user')
+        self.other_group = Group.objects.create(name='unrelated_group')
+        self.other_group.user_set.add(self.unrelated_user)
+
+        self.adult_group = Group.objects.create(name='adult')
+        self.sample_permission = Permission.objects.filter(
+            content_type__app_label='shopping_list',
+        ).first()
+        self.adult_group.permissions.add(self.sample_permission)
+        self.adult_group.user_set.add(self.member_a, self.member_b)
+
+    def tearDown(self):
+        MigrationExecutor(connection).migrate(self.after)
+        call_command('migrate', 'shopping_list', verbosity=0)
+        super().tearDown()
+
+    def test_forward_removes_only_the_adult_group_and_its_associations(self): # noqa
+        MigrationExecutor(connection).migrate(self.after)
+
+        apps = MigrationExecutor(connection).loader.project_state(
+            self.after,
+        ).apps
+        Group = apps.get_model('auth', 'Group')
+        User = apps.get_model('auth', 'User')
+        Permission = apps.get_model('auth', 'Permission')
+
+        self.assertFalse(Group.objects.filter(name='adult').exists())
+        # Nothing else was touched: the unrelated group, its membership,
+        # the users themselves, and the permission object all remain.
+        self.assertTrue(Group.objects.filter(name='unrelated_group').exists()) # noqa
+        self.assertTrue(
+            Group.objects.get(name='unrelated_group').user_set.filter(
+                pk=self.unrelated_user.pk,
+            ).exists(),
+        )
+        self.assertTrue(User.objects.filter(pk=self.member_a.pk).exists())
+        self.assertTrue(User.objects.filter(pk=self.member_b.pk).exists())
+        self.assertTrue(
+            Permission.objects.filter(pk=self.sample_permission.pk).exists(), # noqa
+        )
+
+    def test_forward_on_an_already_absent_group_is_a_safe_no_op(self):
+        self.adult_group.delete()
+
+        MigrationExecutor(connection).migrate(self.after)
+
+        apps = MigrationExecutor(connection).loader.project_state(
+            self.after,
+        ).apps
+        Group = apps.get_model('auth', 'Group')
+        self.assertFalse(Group.objects.filter(name='adult').exists())
+
