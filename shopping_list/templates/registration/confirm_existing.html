@@ -2,7 +2,11 @@
 
 {% block content %}
 <div class="container">
+    {% if family_name %}
     <h1>Create "{{ family_name }}"</h1>
+{% else %}
+    <h1>Create your new family</h1>
+{% endif %}
     <p>This email address already belongs to your account. Confirm below to create the new family and make you its admin.</p> {# noqa #}
     <form method="post">
         {% csrf_token %}

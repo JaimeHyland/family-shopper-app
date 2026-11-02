@@ -2,7 +2,11 @@
 
 {% block content %}
 <div class="container">
+    {% if family_name %}
     <h1>Finish setting up "{{ family_name }}"</h1>
+{% else %}
+    <h1>Finish setting up your account</h1>
+{% endif %}
     <p>Choose a username and password for your admin account.</p>
     <form method="post">
         {% csrf_token %}

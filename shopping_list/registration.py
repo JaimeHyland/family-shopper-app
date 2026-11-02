@@ -209,7 +209,11 @@ def complete_family_admin_registration_for_new_user(
 ) -> RegistrationCompletionResult:
     """
     Atomically create a brand-new User, Family, admin FamilyMembership and
-    a verified/primary allauth EmailAddress, then mark the token consumed.
+    a verified/primary allauth EmailAddress, then delete the now-fulfilled
+    pending registration -- the User/Family created here are the durable
+    record of a successful registration, so there is nothing left for
+    the pending row to track. (Superseded/invalidated pending
+    registrations are still retained elsewhere, unaffected by this.)
     Only a CSRF-protected POST should call this (never a GET).
     """
     digest = hash_token(raw_token) if raw_token else None
@@ -243,7 +247,10 @@ def complete_family_admin_registration_for_new_user(
         user = User.objects.create_user(
             username=username, email=pending.email, password=password,
         )
-        family = Family.objects.create(name=pending.family_name)
+        # Solo registrations never collect a family name (see
+        # SoloRegistrationRequestView.get_family_name): the family is
+        # simply named after the username just chosen here.
+        family = Family.objects.create(name=pending.family_name or username) # noqa
         chosen_display_name = (
             (display_name or "").strip()
             or pending.display_name
@@ -257,8 +264,7 @@ def complete_family_admin_registration_for_new_user(
             user=user, email=pending.email, verified=True, primary=True,
         )
 
-        pending.consumed_at = timezone.now()
-        pending.save(update_fields=["consumed_at"])
+        pending.delete()
 
     return RegistrationCompletionResult(
         user=user, family=family, membership=membership,
@@ -274,7 +280,9 @@ def complete_family_admin_registration_for_existing_user(
     The caller must have already confirmed `user` is logged in and that
     they, specifically, own the pending email (login/reauthentication
     proves which identity is requesting the new family; the token alone
-    only proves control of the mailbox).
+    only proves control of the mailbox). The pending registration is
+    deleted once fulfilled -- see complete_family_admin_registration_for_
+    new_user for why.
     """
     digest = hash_token(raw_token) if raw_token else None
     if digest is None:
@@ -300,7 +308,12 @@ def complete_family_admin_registration_for_existing_user(
                 "This registration link is not for your account.",
             )
 
-        family = Family.objects.create(name=pending.family_name)
+        family = Family.objects.create(
+            # Mirrors the new-user path: a solo request never collected a
+            # family name, so it defaults to the already-existing user's
+            # own username instead.
+            name=pending.family_name or user.username,
+        )
         chosen_display_name = (
             (display_name or "").strip()
             or pending.display_name
@@ -328,8 +341,7 @@ def complete_family_admin_registration_for_existing_user(
             email_address.verified = True
             email_address.save(update_fields=["verified"])
 
-        pending.consumed_at = timezone.now()
-        pending.save(update_fields=["consumed_at"])
+        pending.delete()
 
     return RegistrationCompletionResult(
         user=user, family=family, membership=membership,

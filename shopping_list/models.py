@@ -213,7 +213,10 @@ class PendingFamilyAdminRegistration(models.Model):
     opened and the completion form is submitted successfully.
     """
     email = models.EmailField()
-    family_name = models.CharField(max_length=100)
+    # Blank for solo registrations: the family name isn't known at request
+    # time there, only once the user picks a username at completion (see
+    # complete_family_admin_registration_for_new_user/_for_existing_user).
+    family_name = models.CharField(max_length=100, blank=True, default="")
     # The applicant's own name, captured at request time so it survives
     # through to completion (which may happen in a different browser/
     # session, e.g. after clicking the emailed link on another device).

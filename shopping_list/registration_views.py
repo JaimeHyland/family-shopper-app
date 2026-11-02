@@ -169,15 +169,18 @@ class SoloRegistrationRequestView(_RegistrationRequestView):
     """
     Stage 1 of solo registration: the person's own name + email. Reuses
     the family-admin registration service unchanged -- the resulting
-    Family is simply named after the person, so it ends up containing
-    just that one user.
+    Family simply isn't named yet at this stage; it defaults to whatever
+    username the person picks at completion (see
+    `complete_family_admin_registration_for_new_user`/`..._for_existing_
+    user`), so it ends up containing just that one user without ever
+    asking for a "family name" at all.
     """
 
     form_class = SoloRegistrationRequestForm
     template_name = "registration/solo_request.html"
 
     def get_family_name(self, form):
-        return form.cleaned_data["name"]
+        return ""
 
     def get_display_name(self, form):
         return form.cleaned_data["name"]

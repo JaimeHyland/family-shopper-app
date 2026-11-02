@@ -113,7 +113,8 @@ Maintain a short, comprehensible history of independently reviewable changes. Av
 - Keep track of the current stage and report it briefly when it materially affects the next action.
 - Do not advance to another stage without the user's instruction or clear authorisation in the current task.
 - New or modified migration files that are not yet committed are normal during implementation. Their absence from Git history is not, by itself, a defect.
-- Before applying migrations or changing data, establish which database is targeted. Never assume that local settings point to development, or that a database is safe to modify.
+- Before applying migrations or changing data, establish which database is targeted. Nev
+er assume that local settings point to development, or that a database is safe to modify.
 - Never access or modify production data, apply production migrations, deploy, commit, or push unless the current task explicitly authorises the relevant action. Authorisation to commit may cover a specifically defined series of thematic commits, but does not automatically authorise other commits or any push. Pushing and deploying always require separate explicit authorisation.
 - Do not introduce production-readiness audits, deployment procedures, backups, or other ancillary work into an ordinary development task unless they are necessary to perform that task safely.
 - When a task fails, investigate within its authorised scope. Do not improvise destructive repairs, alter migration history, or expand the task without approval.

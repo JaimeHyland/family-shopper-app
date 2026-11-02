@@ -144,6 +144,13 @@ class HomepageRoutingTests(TestCase):
 
 
 class RegistrationRequestViewTests(TestCase):
+    def test_get_shows_a_family_name_field(self):
+        response = self.client.get(reverse("family_registration_request"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("family_name", response.context["form"].fields)
+        self.assertContains(response, "Family name")
+
     def test_blank_family_name_creates_no_pending_registration(self):
         self.client.post(reverse("family_registration_request"), {
             "admin_name": "Someone",
@@ -283,6 +290,14 @@ class SoloRegistrationRequestViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Your name")
 
+    def test_get_does_not_show_a_family_name_field(self):
+        # Solo registration never asks for a family name -- it defaults
+        # to whatever username the person picks at completion instead.
+        response = self.client.get(reverse("solo_registration_request"))
+
+        self.assertNotIn("family_name", response.context["form"].fields)
+        self.assertNotContains(response, "Family name")
+
     def test_blank_name_creates_no_pending_registration(self):
         self.client.post(reverse("solo_registration_request"), {
             "name": "",
@@ -305,13 +320,14 @@ class SoloRegistrationRequestViewTests(TestCase):
         pending = PendingFamilyAdminRegistration.objects.get(
             email="solo.new@example.com",
         )
-        # The pending "family name" is simply the person's own name; this
-        # is what makes the resulting solo family named after its user.
-        self.assertEqual(pending.family_name, "Jaime Hyland")
+        # No family name is collected at request time for solo
+        # registration; it's left blank and only resolved once a
+        # username is chosen at completion.
+        self.assertEqual(pending.family_name, "")
 
-    def test_completion_creates_a_solo_family_named_after_the_user(self):
+    def test_completion_defaults_the_family_name_to_the_chosen_username(self): # noqa
         result = request_family_admin_registration(
-            family_name="Jaime Hyland", email="solo.complete@example.com",
+            family_name="", email="solo.complete@example.com",
         )
 
         response = self.client.post(
@@ -327,7 +343,7 @@ class SoloRegistrationRequestViewTests(TestCase):
             },
         )
 
-        family = Family.objects.get(name="Jaime Hyland")
+        family = Family.objects.get(name="solo_user")
         self.assertRedirects(
             response,
             reverse("seed_lists", kwargs={"family_slug": family.slug}), # noqa
@@ -336,6 +352,30 @@ class SoloRegistrationRequestViewTests(TestCase):
         membership = family.memberships.get()
         self.assertEqual(membership.user.username, "solo_user")
         self.assertEqual(membership.role, FamilyMembership.Role.ADMIN)
+
+    def test_full_solo_signup_journey_names_the_family_after_the_username(self): # noqa
+        self.client.post(reverse("solo_registration_request"), {
+            "name": "Jaime Hyland",
+            "email": "solo.fulljourney@example.com",
+        })
+        raw_token = mail.outbox[-1].body.split("verify/")[1].split("/")[0]
+
+        response = self.client.post(
+            reverse("registration_complete", kwargs={"token": raw_token}),
+            {
+                "username": "jaime_solo",
+                "password1": "a-very-strong-password-99",
+                "password2": "a-very-strong-password-99",
+                "display_name": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        family = Family.objects.get(name="jaime_solo")
+        membership = family.memberships.get()
+        # The person's own name is still kept as their display name --
+        # only the family name defaults to the username.
+        self.assertEqual(membership.display_name, "Jaime Hyland")
 
 
 class ApplicantNameCarriedThroughTests(TestCase):
@@ -521,6 +561,40 @@ class RegistrationCompletionViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    def test_completion_page_does_not_offer_a_family_name_field_to_re_enter(self): # noqa
+        # The family name is shown (as a heading, from the pending
+        # registration) but must never be a re-enterable form field --
+        # it was already supplied at the initial request stage.
+        raw_token, _pending = self._request_registration()
+
+        response = self.client.get(
+            reverse("registration_complete", kwargs={"token": raw_token}),
+        )
+
+        self.assertNotIn("family_name", response.context["form"].fields)
+
+    def test_family_journey_carries_the_family_name_through_without_retyping_it(self): # noqa
+        self.client.post(reverse("family_registration_request"), {
+            "admin_name": "Jordan Doe",
+            "family_name": "The Does",
+            "email": "family.journey@example.com",
+        })
+        raw_token = mail.outbox[-1].body.split("verify/")[1].split("/")[0]
+
+        get_response = self.client.get(
+            reverse("registration_complete", kwargs={"token": raw_token}),
+        )
+        self.assertContains(get_response, "The Does")
+
+        post_response = self.client.post(
+            reverse("registration_complete", kwargs={"token": raw_token}),
+            self._new_user_payload("jordan_doe"),
+        )
+
+        self.assertEqual(post_response.status_code, 302)
+        family = Family.objects.get(name="The Does")
+        self.assertEqual(family.memberships.get().user.username, "jordan_doe") # noqa
+
     def test_successful_completion_creates_user_family_and_admin_membership(self): # noqa
         raw_token, _pending = self._request_registration(
             email="admin2@example.com", family_name="Successful Family",
@@ -542,6 +616,13 @@ class RegistrationCompletionViewTests(TestCase):
         membership = FamilyMembership.objects.get(user=user)
         self.assertEqual(membership.role, FamilyMembership.Role.ADMIN)
         self.assertEqual(membership.family.name, "Successful Family")
+        # The pending registration is deleted, not merely marked
+        # consumed, once it has been successfully fulfilled.
+        self.assertFalse(
+            PendingFamilyAdminRegistration.objects.filter(
+                email="admin2@example.com",
+            ).exists(),
+        )
 
     def test_completion_creates_primary_verified_email_address(self):
         raw_token, _pending = self._request_registration(
@@ -756,6 +837,13 @@ class ExistingEmailRegistrationTests(TestCase):
             ).count(),
             1,
         )
+        # The pending registration is deleted, not merely marked
+        # consumed, once it has been successfully fulfilled.
+        self.assertFalse(
+            PendingFamilyAdminRegistration.objects.filter(
+                email="owner@example.com",
+            ).exists(),
+        )
 
     def test_service_function_directly_for_existing_user(self):
         raw_token = self._request(family_name="Direct Service Family")
@@ -768,6 +856,11 @@ class ExistingEmailRegistrationTests(TestCase):
         self.assertEqual(result.family.name, "Direct Service Family")
         self.assertEqual(result.membership.display_name, "Direct")
         self.assertEqual(User.objects.count(), 1)
+        self.assertFalse(
+            PendingFamilyAdminRegistration.objects.filter(
+                email="owner@example.com",
+            ).exists(),
+        )
 
 
 class RegistrationServiceUnitTests(TestCase):
@@ -812,6 +905,11 @@ class RegistrationServiceUnitTests(TestCase):
         self.assertEqual(completion.family.name, "Service Family")
         self.assertEqual(completion.membership.role, FamilyMembership.Role.ADMIN) # noqa
         self.assertEqual(completion.membership.display_name, "service_admin") # noqa
+        self.assertFalse(
+            PendingFamilyAdminRegistration.objects.filter(
+                email="service@example.com",
+            ).exists(),
+        )
 
 
 class ExistingMemberWithoutEmailTests(TestCase):
