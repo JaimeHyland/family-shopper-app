@@ -78,6 +78,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'allauth.account.middleware.AccountMiddleware',
+    'shopping_list.middleware.ForcePasswordChangeMiddleware',
 ]
 
 ROOT_URLCONF = 'family_shopping_list.urls'
@@ -160,6 +161,25 @@ ACCOUNT_EMAIL_VERIFICATION = 'none'
 # Keeps username/password login working as-is; login is not made ambiguous
 # or email-based. New Family admins log in the same way, via username.
 ACCOUNT_ADAPTER = 'shopping_list.adapters.NoPublicSignupAccountAdapter'
+# Enforces "a User account has a globally unique email address" (one
+# persistent identity, not a freely-growing list of addresses): without
+# this, allauth's own /accounts/email/ page lets an account accumulate
+# multiple EmailAddress rows. This switches it to a single
+# change-to/replace flow instead -- matching the nav bar's existing
+# "Change Email" label, which already anticipated this. The database
+# backstop (allauth's EmailAddress.unique_verified_email constraint)
+# already prevents two different accounts from both holding the same
+# verified email regardless of this setting.
+ACCOUNT_CHANGE_EMAIL = True
+# Reuses allauth's own rate-limiting infrastructure (same mechanism
+# protecting its standard /accounts/login/) for the per-family
+# display-name login door (see shopping_list.family_login_views). Limits
+# both overall attempts from one IP and repeated attempts against one
+# specific (family, display name) target, regardless of which family it
+# belongs to or whether that display name actually exists there.
+ACCOUNT_RATE_LIMITS = {
+    "family_login_failed": "10/m/ip,5/5m/key",
+}
 
 # Email
 # https://docs.djangoproject.com/en/5.1/topics/email/

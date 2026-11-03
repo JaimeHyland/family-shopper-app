@@ -76,6 +76,20 @@ Always establish the current development stage before acting. The normal cycle i
 4. **Commit** — normally after each completed and accepted task, with explicit authorisation. Push is a separate operation requiring separate authorisation.
 5. **Deploy and migrate production** — only when explicitly requested or authorised as a production deployment task.
 
+### Periodic code-quality reviews
+
+- At appropriate development milestones, remind the user to consider a code-quality and architectural review. Do not interrupt individual feature work unnecessarily.
+- Reviews should look for dead code, duplicated or inconsistent logic, unnecessary complexity, design weaknesses and opportunities to improve maintainability and user comprehensibility.
+- Investigate before recommending refactoring. Distinguish genuine problems from deliberate differences in business logic.
+- Report findings, explain their significance and suggest priorities. Do not undertake broad refactoring without the user's agreement.
+- Do not recommend refactoring merely because code could be written differently. The objective is a simpler, more reliable and understandable application, not an ever-changing codebase.
+
+### Manual functional testing
+
+- For substantial user-facing features, create or update a practical manual functional test script under `docs/manual-testing/`, alongside the automated tests.
+- Scripts should describe the necessary preconditions, user actions and expected results, including relevant edge cases.
+- Keep scripts concise, focused on observable behaviour and consistent with the documented use cases.
+- When implementation changes existing behaviour, update the affected scripts rather than allowing them to become outdated.
 
 ## Git discipline and incremental commits
 
@@ -167,3 +181,4 @@ Workaround:
   syntax-check the file (e.g. `python -c "import ast; ast.parse(open(path).read())"`)
   before relying on it, since a stray `******` will otherwise only surface
   as a confusing runtime/syntax error later.
+

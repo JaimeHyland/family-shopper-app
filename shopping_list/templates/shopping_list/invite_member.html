@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container py-3">
+  {% if messages %}
+  {% for message in messages %}
+  <div class="alert alert-{{ message.tags }}" role="status">{{ message }}</div>
+  {% endfor %}
+  {% endif %}
+
+  <h1 class="h3">Invite a member to {{ request.family.name }}</h1>
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <h2 class="h5 card-title">Invite by email</h2>
+      <p class="text-muted">
+        They'll get a link to set up their own account and password.
+      </p>
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="method" value="email">
+        {{ email_form.non_field_errors }}
+        <div class="mb-3">
+          <label for="{{ email_form.email.id_for_label }}" class="form-label">Email address</label> {# noqa #}
+          {{ email_form.email }}
+          {{ email_form.email.errors }}
+        </div>
+        <button type="submit" class="btn btn-primary">Send invitation</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <h2 class="h5 card-title">Invite without email</h2>
+      <p class="text-muted">
+        Pick this person's display name in the family and an initial
+        password yourself, and share them directly. They'll log in at
+        this family's own login page using their display name (not a
+        username) and will be asked to change the password the first
+        time they log in.
+      </p>
+      <p class="text-muted">
+        This family's login page:
+        <a href="{% url 'family_login' family_slug=request.family.slug %}">{% url 'family_login' family_slug=request.family.slug %}</a> {# noqa #}
+      </p>
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="method" value="no_email">
+        {{ no_email_form.non_field_errors }}
+        <div class="mb-3">
+          <label for="{{ no_email_form.display_name.id_for_label }}" class="form-label">Display name</label> {# noqa #}
+          {{ no_email_form.display_name }}
+          {{ no_email_form.display_name.errors }}
+        </div>
+        <div class="mb-3">
+          <label for="{{ no_email_form.initial_password.id_for_label }}" class="form-label">Initial password</label> {# noqa #}
+          {{ no_email_form.initial_password }}
+          {{ no_email_form.initial_password.errors }}
+        </div>
+        <div class="mb-3">
+          <label for="{{ no_email_form.initial_password2.id_for_label }}" class="form-label">Confirm initial password</label> {# noqa #}
+          {{ no_email_form.initial_password2 }}
+          {{ no_email_form.initial_password2.errors }}
+        </div>
+        <button type="submit" class="btn btn-primary">Create account</button>
+      </form>
+    </div>
+  </div>
+
+  <a href="{% url 'family_members' family_slug=request.family.slug %}">Back to family members</a> {# noqa #}
+</div>
+{% endblock %}

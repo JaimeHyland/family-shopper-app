@@ -1,9 +1,10 @@
-from . import views
+from . import family_login_views, invitation_views, views
 from .seed_views import SeedListView
 from django.urls import path
 
 
 urlpatterns = [
+    path('login/', family_login_views.FamilyLoginView.as_view(), name='family_login'), # noqa
     path('shopping-list/', views.ShoppingListView.as_view(), name='shopping_list'), # noqa
     path('seed-lists/', SeedListView.as_view(), name='seed_lists'),
     path('list-item-<slug:slug>/', views.ListItemView.as_view(), name='list_item'),  # noqa
@@ -25,4 +26,5 @@ urlpatterns = [
     path('categories/<slug:slug>/delete/', views.CategoryDeleteView.as_view(), name='category_delete'), # noqa
     path('add-category/', views.AddCategoryView.as_view(), name='add_category'), # noqa
     path('members/', views.FamilyMembersView.as_view(), name='family_members'), # noqa
+    path('members/invite/', invitation_views.InviteMemberView.as_view(), name='invite_member'), # noqa
 ]

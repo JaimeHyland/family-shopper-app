@@ -242,6 +242,68 @@ class PendingFamilyAdminRegistration(models.Model):
         return f"Pending registration for {self.email}"
 
 
+class PendingFamilyMemberInvitation(models.Model):
+    """
+    A not-yet-accepted invitation for someone to join an EXISTING family
+    as an ordinary member, sent by one of that family's admins. Mirrors
+    PendingFamilyAdminRegistration's token/expiry/supersede pattern, but
+    always resolves to a MEMBER (never ADMIN) role in an existing Family
+    rather than creating a new one.
+    """
+    family = models.ForeignKey(
+        Family,
+        on_delete=models.CASCADE,
+        related_name="pending_invitations",
+    )
+    email = models.EmailField()
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="sent_family_invitations",
+    )
+    token_digest = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["email"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["family", "email"],
+                condition=models.Q(consumed_at__isnull=True),
+                name="unique_active_invitation_per_family_email",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Invitation to {self.email} for {self.family}"
+
+
+class PendingPasswordChange(models.Model):
+    """
+    Exists only while a User created via the no-email member-invitation
+    path (an admin picks a username + initial password directly -- see
+    invite_member_without_email) still needs to change that password
+    before using the app. Deleted the moment they do; its mere existence
+    IS the "must change password" flag -- mirroring how
+    PendingFamilyAdminRegistration/PendingFamilyMemberInvitation rows are
+    deleted once fulfilled rather than retained-but-flagged.
+    """
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="pending_password_change",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Pending password change for {self.user}"
+
+
 class Shop(models.Model):
 
     TYPES_OF_SHOP = (

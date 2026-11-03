@@ -1,5 +1,6 @@
 {% load static %}
 {% load i18n_json %}
+{% load custom_filters %}
 {% url 'home' as home_url %}
 {% url 'account_login' as login_url %}
 {% url 'account_logout' as logout_url %}
@@ -119,7 +120,7 @@
                 </ul>
                 <span class="navbar-text text-muted">
                     {% if user.is_authenticated %}
-                    <p class="text-end m-3">You are logged in as {{ user }}</p>
+                    <p class="text-end m-3">You are logged in as {{ user|logged_in_identity:request }}</p>
                     {% else %}
                     <p class="text-end m-3">You are not logged in</p>
                     {% endif %}
@@ -595,7 +596,7 @@ function showListCompleteModal() {
 
 // WebSocket setup
 {% if request.family %}
-const currentUsername = "{{ request.user.username|escapejs }}";
+const currentUserId = {{ request.user.pk }};
 {% t 'shopping_list.action_rejected' as attr_rejected %}
 const I18N = {
     'shopping_list.action_rejected': "{{ attr_rejected|escapejs }}",
@@ -614,7 +615,7 @@ socket.onmessage = function(event) {
     if (data.type === 'basket_bought') {
         // The person who bought the items already sees the result of
         // their own action; only notify everyone else.
-        if (data.buyer_username !== currentUsername) {
+        if (data.buyer_user_id !== currentUserId) {
             showBasketBoughtModal(data.buyer_display_name, data.item_count);
         }
         return;

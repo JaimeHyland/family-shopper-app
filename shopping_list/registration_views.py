@@ -43,16 +43,23 @@ class AuthenticatedRedirectMixin:
     """
     Routes an already-authenticated visitor away from the anonymous-only
     welcome/registration pages, by membership count: straight into their
-    one family, to a chooser if they have several, or a controlled 403 if
-    they somehow have none.
+    one family, to a chooser if they have several, or a friendly
+    "no family" page (still a controlled 403, reusing family_chooser.html
+    with an empty membership list) if they somehow have none.
     """
 
     def _redirect_authenticated(self, request):
         memberships = list(get_user_memberships(request.user))
         if not memberships:
-            # Preserves the existing controlled no-family 403 response.
-            from django.core.exceptions import PermissionDenied
-            raise PermissionDenied("You are not assigned to a family.")
+            # Rendered directly (rather than redirecting to
+            # `family_chooser`) so this can return 403, not 200 --
+            # preserves the existing controlled-403 contract while
+            # giving the user an explanation and a way out instead of
+            # Django's bare default Forbidden page.
+            return render(
+                request, "family_chooser.html", {"memberships": []},
+                status=403,
+            )
         if len(memberships) == 1:
             return redirect(
                 "shopping_list",

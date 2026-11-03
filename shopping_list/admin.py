@@ -1,4 +1,6 @@
 from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
+from django.contrib.auth.models import User
 from django.db import transaction
 from .models import (
     Category,
@@ -6,11 +8,42 @@ from .models import (
     FamilyMembership,
     ListItem,
     PendingFamilyAdminRegistration,
+    PendingFamilyMemberInvitation,
+    PendingPasswordChange,
     Product,
     Shop,
     ShoppingList,
     lock_family_for_membership_changes,
 )
+
+
+class UserAdmin(DjangoUserAdmin):
+    """Extends Django's own User admin -- unchanged otherwise -- with a
+    maintenance-only view of each account's family-local display
+    name(s). Username stays globally unique and technical (and, for
+    no-email members, an opaque internal identifier -- see
+    shopping_list.invitations.INTERNAL_USERNAME_PREFIX); display_name is
+    the human-facing identity, stored per-FamilyMembership since the
+    same account can go by a different name in each family. Shown here,
+    side-by-side with username, for admin/superuser maintenance only --
+    never surfaced to ordinary users (see custom_filters.
+    logged_in_identity)."""
+
+    list_display = DjangoUserAdmin.list_display + ("family_display_names",)
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).prefetch_related(
+            "family_memberships__family",
+        )
+
+    def family_display_names(self, obj):
+        memberships = list(obj.family_memberships.all())
+        if not memberships:
+            return "—"
+        return ", ".join(
+            f"{m.display_name} ({m.family.name})" for m in memberships
+        )
+    family_display_names.short_description = "Display name(s)"
 
 
 class FamilyAdmin(admin.ModelAdmin):
@@ -69,6 +102,27 @@ class PendingFamilyAdminRegistrationAdmin(admin.ModelAdmin):
         'email', 'family_name', 'token_digest', 'created_at', 'expires_at',
         'consumed_at',
     )
+
+
+class PendingFamilyMemberInvitationAdmin(admin.ModelAdmin):
+    # token_digest is a one-way hash, never the raw token, but it still
+    # should never be hand-edited via the admin.
+    list_display = (
+        'email', 'family', 'invited_by', 'created_at', 'expires_at',
+        'consumed_at',
+    )
+    list_filter = ('consumed_at', 'family')
+    search_fields = ('email', 'family__name')
+    readonly_fields = (
+        'family', 'email', 'invited_by', 'token_digest', 'created_at',
+        'expires_at', 'consumed_at',
+    )
+
+
+class PendingPasswordChangeAdmin(admin.ModelAdmin):
+    list_display = ('user', 'created_at')
+    search_fields = ('user__username',)
+    readonly_fields = ('user', 'created_at')
 
 
 class ListItemAdmin(admin.ModelAdmin):
@@ -159,6 +213,8 @@ class ShoppingListAdmin(admin.ModelAdmin):
     )
 
 
+admin.site.unregister(User)
+admin.site.register(User, UserAdmin)
 admin.site.register(ListItem, ListItemAdmin)
 admin.site.register(Product, ProductAdmin)
 admin.site.register(Category, CategoryAdmin)
@@ -169,3 +225,7 @@ admin.site.register(ShoppingList, ShoppingListAdmin)
 admin.site.register(
     PendingFamilyAdminRegistration, PendingFamilyAdminRegistrationAdmin,
 )
+admin.site.register(
+    PendingFamilyMemberInvitation, PendingFamilyMemberInvitationAdmin,
+)
+admin.site.register(PendingPasswordChange, PendingPasswordChangeAdmin)

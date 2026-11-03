@@ -2315,7 +2315,9 @@ class BuyBasketWebSocketTests(TwoFamilyFixtureMixin, TransactionTestCase):
 
             self.assertEqual(len(basket_messages), 1)
             self.assertEqual(basket_messages[0]["item_count"], 2)
-            self.assertEqual(basket_messages[0]["buyer_username"], "member_a")
+            self.assertEqual(
+                basket_messages[0]["buyer_user_id"], self.member_a.pk,
+            )
 
             self.assertEqual(len(complete_messages), 1)
 
@@ -4169,6 +4171,89 @@ class FamilyMembersViewTests(TwoFamilyTestCase):
             pk=other_family_membership.pk,
         ).exists())
 
+    def test_admin_rows_show_permissions_checked_and_disabled(self):
+        self.client.force_login(self.admin_a)
+        admin_membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.admin_a,
+        )
+        member_membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.member_a,
+        )
+        # Fixture default for an admin membership: can_add_list and
+        # can_remove_list True, the other four False -- a deliberate mix
+        # so the hidden-input checks below can't pass by accident if the
+        # value were hardcoded to always be "on".
+        true_fields = ["can_add_list", "can_remove_list"]
+        false_fields = [
+            "can_add_catalogue", "can_remove_catalogue",
+            "can_add_shops", "can_remove_shops",
+        ]
+
+        page = self.client.get(self.url_a("family_members"))
+
+        # Admin row: all six of the SIX permission fields are shown
+        # checked AND disabled (editing them has no effect while this
+        # member remains an administrator) ...
+        for field in true_fields + false_fields:
+            self.assertContains(
+                page, f'id="{field}-{admin_membership.pk}" checked disabled', # noqa
+            )
+            # ... while the matching hidden input carries the
+            # membership's ACTUAL stored value, not an assumed True, so
+            # that value survives unchanged if this admin is demoted.
+            expected_hidden_value = "on" if field in true_fields else ""
+            self.assertContains(
+                page,
+                f'<input type="hidden" name="{field}" '
+                f'value="{expected_hidden_value}">',
+            )
+
+        # Ordinary member row: unaffected -- every field still reflects
+        # its real stored value and remains editable (not disabled).
+        for field in true_fields + false_fields:
+            self.assertContains(
+                page, f'id="{field}-{member_membership.pk}"',
+            )
+            self.assertNotContains(
+                page, f'id="{field}-{member_membership.pk}" checked disabled', # noqa
+            )
+
+    def test_demoting_a_non_sole_admin_preserves_their_stored_permission_flags(self): # noqa
+        self.client.force_login(self.admin_a)
+        second_admin = User.objects.create_user(
+            username="second_admin_a", password="testpass123",
+        )
+        second_admin_membership = FamilyMembership.objects.create(
+            family=self.family_a, user=second_admin,
+            role=FamilyMembership.Role.ADMIN, display_name="Second Admin",
+        )
+        # Model defaults: can_add_list/can_remove_list True, the other
+        # four False -- never customised while they were an admin.
+
+        # Mirrors exactly what the disabled-but-hidden-preserved
+        # checkboxes in the admin-row template actually submit: the
+        # membership's CURRENT stored values, not a fresh user choice.
+        response = self.client.post(self.url_a("family_members"), {
+            "membership_id": second_admin_membership.pk, "action": "update",
+            "role": FamilyMembership.Role.MEMBER,
+            "can_add_list": "on", "can_remove_list": "on",
+            "can_add_catalogue": "", "can_remove_catalogue": "",
+            "can_add_shops": "", "can_remove_shops": "",
+        })
+
+        self.assertRedirects(response, self.url_a("family_members"))
+        second_admin_membership.refresh_from_db()
+        self.assertEqual(
+            second_admin_membership.role, FamilyMembership.Role.MEMBER,
+        )
+        # The demotion must not have silently wiped their permissions.
+        self.assertTrue(second_admin_membership.can_add_list)
+        self.assertTrue(second_admin_membership.can_remove_list)
+        self.assertFalse(second_admin_membership.can_add_catalogue)
+        self.assertFalse(second_admin_membership.can_remove_catalogue)
+        self.assertFalse(second_admin_membership.can_add_shops)
+        self.assertFalse(second_admin_membership.can_remove_shops)
+
 
 class FamilyMembershipAdminLastAdminProtectionTests(TwoFamilyTestCase):
     """Functional coverage, via the real Django admin HTTP views (not
@@ -4271,6 +4356,66 @@ class FamilyMembershipAdminLastAdminProtectionTests(TwoFamilyTestCase):
         )
         membership.refresh_from_db()
         self.assertEqual(membership.role, FamilyMembership.Role.MEMBER)
+
+
+class UserAdminDisplayNameTests(TwoFamilyTestCase):
+    """shopping_list.admin.UserAdmin: the User changelist shows each
+    account's family-local display name(s) alongside its (technical,
+    globally-unique) username, for admin/superuser maintenance only."""
+
+    def setUp(self):
+        super().setUp()
+        self.staff_user = User.objects.create_superuser(
+            username="admin_site_staff_display_names",
+            email="staff_dn@example.com",
+        )
+        self.client.force_login(self.staff_user)
+
+    def test_changelist_shows_username_and_display_name(self):
+        response = self.client.get(reverse("admin:auth_user_changelist"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Display name(s)")
+        # member_a's technical username AND their family-local display
+        # name (set to the same string by create_family_with_members,
+        # but these are two distinct columns -- not a coincidence being
+        # masked here) must both appear.
+        self.assertContains(response, self.member_a.username)
+        membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.member_a,
+        )
+        self.assertContains(
+            response,
+            f"{membership.display_name} ({self.family_a.name})",
+        )
+
+    def test_changelist_shows_multiple_display_names_for_one_account(self):
+        # The SAME account can go by a different display name in each
+        # family it belongs to -- confirm both show up, distinctly.
+        FamilyMembership.objects.create(
+            family=self.family_b, user=self.member_a, display_name="Other Name", # noqa
+        )
+
+        response = self.client.get(reverse("admin:auth_user_changelist"))
+
+        original_membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.member_a,
+        )
+        self.assertContains(
+            response,
+            f"{original_membership.display_name} ({self.family_a.name})",
+        )
+        self.assertContains(
+            response, f"Other Name ({self.family_b.name})",
+        )
+
+    def test_changelist_shows_a_dash_for_an_account_with_no_membership(self):
+        orphan = User.objects.create_user(username="orphan_display_name_test") # noqa
+
+        response = self.client.get(reverse("admin:auth_user_changelist"))
+
+        self.assertContains(response, orphan.username)
+        self.assertContains(response, "—")
 
 
 class LastAdministratorConcurrencyTests(TwoFamilyFixtureMixin, TransactionTestCase): # noqa

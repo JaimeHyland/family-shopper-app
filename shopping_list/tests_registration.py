@@ -1,4 +1,5 @@
 """Tests for public Family-admin self-registration (request -> email -> completion)."""
+import re
 from datetime import timedelta
 
 from django.contrib.auth.models import User
@@ -72,6 +73,27 @@ class HomepageRoutingTests(TestCase):
         self.assertNotContains(response, "Family name")
         self.assertNotContains(response, "<form")
 
+    def test_welcome_page_forwards_next_to_the_login_link(self):
+        next_url = "/register/verify/some-token/"
+
+        response = self.client.get(
+            reverse("logged_out_homepage"), {"next": next_url},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        login_url = reverse("account_login")
+        self.assertContains(
+            response, f'href="{login_url}?next={next_url}"',
+        )
+
+    def test_welcome_page_login_link_has_no_next_when_none_was_supplied(self): # noqa
+        response = self.client.get(reverse("logged_out_homepage"))
+
+        self.assertEqual(response.status_code, 200)
+        login_url = reverse("account_login")
+        self.assertContains(response, f'href="{login_url}"')
+        self.assertNotContains(response, f'href="{login_url}?next=')
+
     def test_authenticated_user_with_one_membership_is_redirected(self):
         family = Family.objects.create(name="Redirect Family")
         user = User.objects.create_user(username="redir_member", password="pass1234") # noqa
@@ -94,6 +116,13 @@ class HomepageRoutingTests(TestCase):
         response = self.client.get(reverse("logged_out_homepage"))
 
         self.assertEqual(response.status_code, 403)
+        # A friendly explanation and a way out -- not Django's bare
+        # default Forbidden page -- and no suggestion that the user can
+        # join a family themselves from here.
+        self.assertContains(
+            response, "does not currently belong to any family", status_code=403, # noqa
+        )
+        self.assertContains(response, "Log out", status_code=403)
 
     def test_authenticated_user_with_multiple_memberships_sees_chooser(self):
         user = User.objects.create_user(username="multi_home", password="pass1234") # noqa
@@ -128,6 +157,7 @@ class HomepageRoutingTests(TestCase):
 
         self.assertContains(response, "Mine")
         self.assertNotContains(response, "NotMine")
+        self.assertNotContains(response, "does not currently belong")
 
     def test_welcome_page_redirects_to_homepage(self):
         response = self.client.get("/welcome_page/")
@@ -784,6 +814,51 @@ class ExistingEmailRegistrationTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("next=", response["Location"])
         self.assertIn(raw_token, response["Location"])
+
+    def test_full_redirect_chain_returns_to_verification_after_login(self):
+        # Reproduces the originally reported bug: an unauthenticated user
+        # clicking an email-verification link must be able to get all
+        # the way back to that same link after logging in, via the
+        # welcome page -- not get stranded there.
+        self.existing_user.set_password("a-known-test-password-99")
+        self.existing_user.save()
+        raw_token = self._request()
+        verify_url = reverse(
+            "registration_complete", kwargs={"token": raw_token},
+        )
+
+        redirect_to_homepage = self.client.get(verify_url)
+        self.assertEqual(redirect_to_homepage.status_code, 302)
+        homepage_url = redirect_to_homepage["Location"]
+
+        homepage_response = self.client.get(homepage_url)
+        self.assertEqual(homepage_response.status_code, 200)
+
+        login_path = reverse("account_login")
+        # base.html's persistent nav bar also has a plain "Log in" link
+        # (which never forwards `next`); the one we actually want is the
+        # "I already have an account" call-to-action in the page body.
+        candidates = re.findall(
+            rf'href="({re.escape(login_path)}[^"]*)"',
+            homepage_response.content.decode(),
+        )
+        login_link = next(
+            (c for c in candidates if "next=" in c), None,
+        )
+        self.assertIsNotNone(
+            login_link,
+            "No login link forwarding 'next' was found on the welcome page", # noqa
+        )
+        login_link = login_link.replace("&amp;", "&")
+
+        login_response = self.client.post(login_link, {
+            "login": "existing_owner",
+            "password": "a-known-test-password-99",
+        })
+
+        self.assertRedirects(
+            login_response, verify_url, fetch_redirect_response=False,
+        )
 
     def test_completion_requires_login_to_the_matching_account(self):
         raw_token = self._request()

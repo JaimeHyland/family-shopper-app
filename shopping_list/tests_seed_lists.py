@@ -384,6 +384,18 @@ class SeedSelectionViewTests(TwoFamilyTestCase):
             self.assertContains(response, "seed_selection.js")
         self.assertEqual(list(ListItem.objects.order_by("pk").values()), before)
 
+    def test_seed_list_dropdown_auto_submits_on_change(self):
+        # Changing the dropdown must refresh the page to the chosen
+        # seed list without requiring a separate button click.
+        response = self.client.get(self.url)
+
+        self.assertContains(
+            response,
+            '<select id="seed-list" name="seed" '
+            'class="form-select w-auto mw-100" '
+            'onchange="this.form.submit()">',
+        )
+
     def test_seed_list_entry_point_is_on_products_not_shopping_list(self):
         shopping_list_page = self.client.get(self.url_a("shopping_list"))
         self.assertNotContains(shopping_list_page, f'href="{self.url}"')

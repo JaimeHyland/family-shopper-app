@@ -86,7 +86,7 @@ class ShoppingConsumer(AsyncWebsocketConsumer):
     async def basket_bought(self, event):
         await self.send(text_data=json.dumps({
             'type': 'basket_bought',
-            'buyer_username': event['buyer_username'],
+            'buyer_user_id': event['buyer_user_id'],
             'buyer_display_name': event['buyer_display_name'],
             'item_count': event['item_count'],
         }))

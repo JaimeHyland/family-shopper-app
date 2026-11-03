@@ -14,6 +14,10 @@
     least one administrator.
   </p>
 
+  <p>
+    <a href="{% url 'invite_member' family_slug=request.family.slug %}" class="btn btn-sm btn-outline-primary">Invite a member</a> {# noqa #}
+  </p>
+
   {% for row in rows %}
   <div class="card mb-3">
     <div class="card-body">
@@ -37,33 +41,49 @@
           {{ row.form.role }}
         </div>
 
+        {% if row.membership.is_family_admin %}
+        <div class="col-12">
+          <p class="text-muted small mb-1">
+            Administrators always have full access; these are shown
+            checked and disabled for reference only -- editing them here
+            has no effect while this member remains an administrator.
+          </p>
+        </div>
+        {% endif %}
+
         <div class="col-12">
           <div class="form-check form-check-inline">
-            <input class="form-check-input" type="checkbox" name="can_add_list" id="can_add_list-{{ row.membership.pk }}" {% if row.membership.can_add_list %}checked{% endif %}>
+            <input class="form-check-input" type="checkbox" name="can_add_list" id="can_add_list-{{ row.membership.pk }}" {% if row.membership.is_family_admin or row.membership.can_add_list %}checked{% endif %} {% if row.membership.is_family_admin %}disabled{% endif %}>
+            {% if row.membership.is_family_admin %}<input type="hidden" name="can_add_list" value="{% if row.membership.can_add_list %}on{% endif %}">{% endif %}
             <label class="form-check-label" for="can_add_list-{{ row.membership.pk }}">Add items to the shopping list</label>
           </div>
           <div class="form-check form-check-inline">
-            <input class="form-check-input" type="checkbox" name="can_remove_list" id="can_remove_list-{{ row.membership.pk }}" {% if row.membership.can_remove_list %}checked{% endif %}>
+            <input class="form-check-input" type="checkbox" name="can_remove_list" id="can_remove_list-{{ row.membership.pk }}" {% if row.membership.is_family_admin or row.membership.can_remove_list %}checked{% endif %} {% if row.membership.is_family_admin %}disabled{% endif %}>
+            {% if row.membership.is_family_admin %}<input type="hidden" name="can_remove_list" value="{% if row.membership.can_remove_list %}on{% endif %}">{% endif %}
             <label class="form-check-label" for="can_remove_list-{{ row.membership.pk }}">Remove items from the shopping list</label>
           </div>
         </div>
         <div class="col-12">
           <div class="form-check form-check-inline">
-            <input class="form-check-input" type="checkbox" name="can_add_catalogue" id="can_add_catalogue-{{ row.membership.pk }}" {% if row.membership.can_add_catalogue %}checked{% endif %}>
+            <input class="form-check-input" type="checkbox" name="can_add_catalogue" id="can_add_catalogue-{{ row.membership.pk }}" {% if row.membership.is_family_admin or row.membership.can_add_catalogue %}checked{% endif %} {% if row.membership.is_family_admin %}disabled{% endif %}>
+            {% if row.membership.is_family_admin %}<input type="hidden" name="can_add_catalogue" value="{% if row.membership.can_add_catalogue %}on{% endif %}">{% endif %}
             <label class="form-check-label" for="can_add_catalogue-{{ row.membership.pk }}">Add products to the catalogue</label>
           </div>
           <div class="form-check form-check-inline">
-            <input class="form-check-input" type="checkbox" name="can_remove_catalogue" id="can_remove_catalogue-{{ row.membership.pk }}" {% if row.membership.can_remove_catalogue %}checked{% endif %}>
+            <input class="form-check-input" type="checkbox" name="can_remove_catalogue" id="can_remove_catalogue-{{ row.membership.pk }}" {% if row.membership.is_family_admin or row.membership.can_remove_catalogue %}checked{% endif %} {% if row.membership.is_family_admin %}disabled{% endif %}>
+            {% if row.membership.is_family_admin %}<input type="hidden" name="can_remove_catalogue" value="{% if row.membership.can_remove_catalogue %}on{% endif %}">{% endif %}
             <label class="form-check-label" for="can_remove_catalogue-{{ row.membership.pk }}">Remove products from the catalogue</label>
           </div>
         </div>
         <div class="col-12">
           <div class="form-check form-check-inline">
-            <input class="form-check-input" type="checkbox" name="can_add_shops" id="can_add_shops-{{ row.membership.pk }}" {% if row.membership.can_add_shops %}checked{% endif %}>
+            <input class="form-check-input" type="checkbox" name="can_add_shops" id="can_add_shops-{{ row.membership.pk }}" {% if row.membership.is_family_admin or row.membership.can_add_shops %}checked{% endif %} {% if row.membership.is_family_admin %}disabled{% endif %}>
+            {% if row.membership.is_family_admin %}<input type="hidden" name="can_add_shops" value="{% if row.membership.can_add_shops %}on{% endif %}">{% endif %}
             <label class="form-check-label" for="can_add_shops-{{ row.membership.pk }}">Add shops</label>
           </div>
           <div class="form-check form-check-inline">
-            <input class="form-check-input" type="checkbox" name="can_remove_shops" id="can_remove_shops-{{ row.membership.pk }}" {% if row.membership.can_remove_shops %}checked{% endif %}>
+            <input class="form-check-input" type="checkbox" name="can_remove_shops" id="can_remove_shops-{{ row.membership.pk }}" {% if row.membership.is_family_admin or row.membership.can_remove_shops %}checked{% endif %} {% if row.membership.is_family_admin %}disabled{% endif %}>
+            {% if row.membership.is_family_admin %}<input type="hidden" name="can_remove_shops" value="{% if row.membership.can_remove_shops %}on{% endif %}">{% endif %}
             <label class="form-check-label" for="can_remove_shops-{{ row.membership.pk }}">Remove shops</label>
           </div>
         </div>

@@ -261,7 +261,11 @@ def broadcast_basket_bought(family, buyer, item_count):
             f"shopping_list_updates_{family.id}",
             {
                 'type': 'basket_bought',
-                'buyer_username': buyer.get_username(),
+                # An opaque id, not buyer.get_username(): the client only
+                # needs this to check "was it me?" (see base.html), and a
+                # no-email member's Django username is an internal
+                # identifier that must never reach the browser.
+                'buyer_user_id': buyer.pk,
                 'buyer_display_name': member_display_name(buyer, family),
                 'item_count': item_count,
             }
