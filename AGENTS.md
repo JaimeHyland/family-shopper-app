@@ -1,15 +1,50 @@
 # Standing user preference: strict cost discipline
 
-> **MOST-MISSED RULE — CHECK THIS LAST, EVERY TIME:** Any message you are
-> about to send that is a report (investigation report, diagnostic report,
-> phase report, completion report, findings, root-cause analysis - any
-> structured summary written up for the user) MUST be copied to the
-> Windows clipboard via PowerShell `Set-Clipboard` in the SAME turn, before
-> you stop and hand control back to the user. This has been missed
-> repeatedly in the past. Before ending any turn that contains such a
-> report, explicitly re-read the report you just wrote and ask yourself
-> "did I already run Set-Clipboard on this exact content in this turn?" -
-> if not, do it now, then finish.
+> **MOST-MISSED RULES — CHECK AT THE RELEVANT MOMENT, EVERY TIME:**
+>
+> **1. Before running ANY test, assess relevance FIRST.** Before issuing
+> a test-runner command for any reason — a single test, a class, a file,
+> or a suite — stop and explicitly name which specific tests are
+> strictly relevant to the change just made, and why. Never run a
+> broader selection "to be safe," an unrelated file, or a whole suite,
+> without having first named that precise relevant set. This has been
+> missed repeatedly, including running an entire test file (dozens of
+> tests across many unrelated classes) when only one or two specific
+> classes actually covered the change made. Concrete fix: before
+> constructing the test-run command, first identify (in your own
+> reasoning/response, even briefly) exactly which test classes/methods
+> cover the changed code and which classes in the same file do not, THEN
+> run only the relevant ones - never the whole file "because it's the
+> right file anyway."
+>
+> **2. Every report must be copied to the clipboard.** Any message you
+> are about to send that is a report (investigation report, diagnostic
+> report, phase report, completion report, findings, root-cause analysis
+> - any structured summary written up for the user, however short,
+> including a brief "what changed / tests run / results" completion
+> summary for a small task) MUST be copied to the Windows clipboard via
+> PowerShell `Set-Clipboard` in the SAME turn, before you stop and hand
+> control back to the user.
+>
+> This has been missed repeatedly, on both large and small reports alike.
+> Root cause: the check was previously only a mental/internal one ("ask
+> yourself...") with no concrete forcing step, and the final tool call in
+> a turn is normally substantive work (tests, git status, etc.) after
+> which it is easy to move straight to the final text without one more
+> deliberate action. To fix this structurally, not just by remembering
+> harder:
+> - Treat the clipboard copy as a mandatory, separate, standalone tool
+>   call in the action sequence for any such turn - the same kind of
+>   required step as running a test, never an optional afterthought
+>   folded into other work.
+> - Finalise the report text FIRST, then immediately issue one dedicated
+>   `Set-Clipboard` call with that exact text as the literal next tool
+>   call - not bundled with, or justified as already covered by, an
+>   earlier unrelated tool call in the same turn.
+> - Before ending any turn that contains such a report, explicitly
+>   re-read what you are about to send and ask "did I already run
+>   Set-Clipboard on this exact content, as its own tool call, in this
+>   turn?" - if not, do it now, then finish.
 
 Treat cost control as a high priority in every task and future session in this project.
 
@@ -21,6 +56,8 @@ Treat cost control as a high priority in every task and future session in this p
   change or concrete unresolved concern that justifies them.
 - Run validation proportionate to the change. Avoid broad suites for wording
   changes or other low-impact edits unless explicitly requested or required.
+- See "MOST-MISSED RULE 1" above: never run any test without first naming
+  exactly which tests are strictly relevant to the change in question.
 - Before re-running a test (or suite), check whether anything relevant has
   changed since it last ran. If nothing relevant changed, reuse the prior
   result instead of re-running it.
