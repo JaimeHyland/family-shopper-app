@@ -11,6 +11,7 @@ from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.views import redirect_to_login
 from django.shortcuts import redirect, render
+from django.urls import reverse
 from django.utils.decorators import method_decorator
 from django.views import View
 
@@ -43,14 +44,22 @@ class AuthenticatedRedirectMixin:
     """
     Routes an already-authenticated visitor away from the anonymous-only
     welcome/registration pages, by membership count: straight into their
-    one family, to a chooser if they have several, or a friendly
-    "no family" page (still a controlled 403, reusing family_chooser.html
-    with an empty membership list) if they somehow have none.
+    one family, to a chooser if they have several, or -- if they somehow
+    have none -- straight to Django admin for a superuser (for whom
+    having no family is the normal, by-design state, not an error), or
+    a friendly "no family" page (still a controlled 403, reusing
+    family_chooser.html with an empty membership list) for anyone else.
     """
 
     def _redirect_authenticated(self, request):
         memberships = list(get_user_memberships(request.user))
         if not memberships:
+            if request.user.is_superuser:
+                # is_superuser is already loaded on request.user by
+                # Django's auth middleware for every request -- no extra
+                # query, and this branch only runs in the already-rare
+                # zero-membership case, so it costs nothing elsewhere.
+                return redirect("admin:index")
             # Rendered directly (rather than redirecting to
             # `family_chooser`) so this can return 403, not 200 --
             # preserves the existing controlled-403 contract while
@@ -97,13 +106,17 @@ class _RegistrationRequestView(AuthenticatedRedirectMixin, View):
     """
     Shared stage-1 logic for both solo and family registration: validate
     the form, create a pending registration, and email a verification
-    link. Subclasses only supply the form, the template, and how to read
-    the family/account name out of the validated form; everything else
-    -- including the email-verification safeguards -- is identical.
+    link. Subclasses only supply the form, the template, how to read the
+    family/account name out of the validated form, and which kind of
+    registration this is (registration_mode, carried through to
+    check-email so that page can refer to "your account" rather than "a
+    family" for solo registration); everything else -- including the
+    email-verification safeguards -- is identical.
     """
 
     form_class = None
     template_name = None
+    registration_mode = None
 
     def get_family_name(self, form):
         raise NotImplementedError
@@ -154,7 +167,11 @@ class _RegistrationRequestView(AuthenticatedRedirectMixin, View):
                     })
             # Same generic outcome regardless of cooldown/existing-account/
             # brand-new-request -- never discloses which case applied.
-            return redirect("registration_check_email")
+            # The mode query param only indicates which FORM was
+            # submitted (a public, non-sensitive choice the visitor
+            # already made), never whether that email exists.
+            check_email_url = reverse("registration_check_email")
+            return redirect(f"{check_email_url}?mode={self.registration_mode}") # noqa
 
         return render(request, self.template_name, {"form": form})
 
@@ -164,6 +181,7 @@ class FamilyRegistrationRequestView(_RegistrationRequestView):
 
     form_class = FamilyAdminRegistrationRequestForm
     template_name = "registration/family_request.html"
+    registration_mode = "family"
 
     def get_family_name(self, form):
         return form.cleaned_data["family_name"]
@@ -185,6 +203,7 @@ class SoloRegistrationRequestView(_RegistrationRequestView):
 
     form_class = SoloRegistrationRequestForm
     template_name = "registration/solo_request.html"
+    registration_mode = "solo"
 
     def get_family_name(self, form):
         return ""
@@ -194,7 +213,9 @@ class SoloRegistrationRequestView(_RegistrationRequestView):
 
 
 def registration_check_email(request):
-    return render(request, "registration/check_email.html")
+    return render(request, "registration/check_email.html", {
+        "registration_mode": request.GET.get("mode"),
+    })
 
 
 @method_decorator(login_required, name='dispatch')
@@ -283,7 +304,6 @@ class RegistrationCompletionView(View):
         try:
             result = complete_family_admin_registration_for_new_user(
                 raw_token=token,
-                username=form.cleaned_data["username"],
                 password=form.cleaned_data["password1"],
                 display_name=form.cleaned_data["display_name"],
             )
@@ -309,7 +329,14 @@ class RegistrationCompletionView(View):
             request, result.user,
             backend="django.contrib.auth.backends.ModelBackend",
         )
-        messages.success(request, "Welcome! Your family has been created.")
+        if pending.family_name:
+            messages.success(
+                request, "Welcome! Your family has been created.",
+            )
+        else:
+            messages.success(
+                request, "Welcome! Your account has been created.",
+            )
         return redirect(
             "seed_lists", family_slug=result.family.slug,
         )
@@ -335,9 +362,14 @@ class RegistrationCompletionView(View):
         except RegistrationAuthorizationError:
             return self._wrong_account_response(request)
 
-        messages.success(
-            request, "Your new family has been created.",
-        )
+        if pending.family_name:
+            messages.success(
+                request, "Your new family has been created.",
+            )
+        else:
+            messages.success(
+                request, "Your new account has been created.",
+            )
         return redirect(
             "seed_lists", family_slug=result.family.slug,
         )

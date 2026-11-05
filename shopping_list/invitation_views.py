@@ -250,7 +250,6 @@ class MemberInvitationCompletionView(View):
         try:
             membership = complete_invitation_for_new_user(
                 raw_token=token,
-                username=form.cleaned_data["username"],
                 password=form.cleaned_data["password1"],
                 display_name=form.cleaned_data["display_name"],
             )

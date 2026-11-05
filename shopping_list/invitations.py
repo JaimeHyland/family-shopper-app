@@ -9,7 +9,6 @@ login, see PendingPasswordChange). Contains no HTTP/template concerns
 (no request, response, or session access), matching the registration
 service layer's separation.
 """
-import secrets
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Optional
@@ -28,9 +27,11 @@ from .models import (
     PendingPasswordChange,
 )
 from .registration import (
+    INTERNAL_USERNAME_PREFIX,
     AmbiguousEmailOwnershipError,
     PasswordPolicyError,
     find_existing_user_for_email,
+    generate_internal_username,
     generate_registration_token,
     hash_token,
     normalize_email,
@@ -39,12 +40,6 @@ from .registration import (
 # An invitee may not check their email right away, so this is deliberately
 # much longer than REGISTRATION_TOKEN_LIFETIME's 30 minutes.
 INVITATION_TOKEN_LIFETIME = timedelta(days=7)
-
-# Prefix on auto-generated internal usernames (see
-# _generate_internal_username), so they remain recognisable as such to
-# an administrator/superuser browsing Django admin for maintenance --
-# the one audience these are ever meant to be visible to.
-INTERNAL_USERNAME_PREFIX = "member_"
 
 
 # Re-exported so callers only need to import from this module.
@@ -89,25 +84,6 @@ def _validate_password_for_candidate(password: str, *, username: str) -> None:
         validate_password(password, user=User(username=username))
     except DjangoValidationError as exc:
         raise PasswordPolicyError(exc.messages) from exc
-
-
-def _generate_internal_username() -> str:
-    """
-    An opaque, globally-unique Django username for a no-email member,
-    generated server-side so no one -- not the inviting admin, not the
-    invitee -- ever needs to choose or see it. It carries no meaning
-    beyond being Django's required login identifier; the person's real,
-    family-local identity is their FamilyMembership.display_name, and
-    they log in via family_login_views.FamilyLoginView using that
-    display name, never this username.
-    """
-    for _ in range(10):
-        candidate = INTERNAL_USERNAME_PREFIX + secrets.token_hex(16)
-        if not User.objects.filter(username__iexact=candidate).exists():
-            return candidate
-    raise RuntimeError(
-        "Could not generate a unique internal username after 10 attempts.",
-    )
 
 
 def _default_display_name_for_existing_user(user: User) -> Optional[str]:
@@ -217,7 +193,7 @@ def invite_member_without_email(
             "family. Please choose a different display name.",
         )
 
-    username = _generate_internal_username()
+    username = generate_internal_username()
     _validate_password_for_candidate(initial_password, username=username)
 
     with transaction.atomic():
@@ -259,8 +235,7 @@ def get_valid_pending_invitation(
 
 
 def complete_invitation_for_new_user(
-    *, raw_token: str, username: str, password: str,
-    display_name: Optional[str] = None,
+    *, raw_token: str, password: str, display_name: str,
 ) -> FamilyMembership:
     """
     Atomically create a brand-new User, an ordinary-member
@@ -268,12 +243,23 @@ def complete_invitation_for_new_user(
     allauth EmailAddress, then delete the now-fulfilled invitation (see
     shopping_list.registration's completion functions for why rows are
     deleted rather than retained-but-flagged). Only a CSRF-protected
-    POST should call this (never a GET).
+    POST should call this (never a GET). The User's Django username is
+    generated internally (see registration.generate_internal_username)
+    -- the invitee is never asked for one. display_name is required:
+    unlike the Family-admin registration paths, no name is ever
+    collected earlier for an email invitation (the inviting admin only
+    supplies an email address), so there is no other human-meaningful
+    value left to fall back to once the username itself is opaque.
     """
     digest = hash_token(raw_token) if raw_token else None
     if digest is None:
         raise InvalidInvitationTokenError("Missing token.")
 
+    chosen_display_name = (display_name or "").strip()
+    if not chosen_display_name:
+        raise InvitationConflictError("A display name is required.")
+
+    username = generate_internal_username()
     _validate_password_for_candidate(password, username=username)
 
     with transaction.atomic():
@@ -292,14 +278,11 @@ def complete_invitation_for_new_user(
         if pending.expires_at <= timezone.now():
             raise InvalidInvitationTokenError("Invitation expired.")
 
-        if User.objects.filter(username__iexact=username).exists():
-            raise InvitationConflictError("That username is not available.") # noqa
         if find_existing_user_for_email(pending.email) is not None:
             raise InvitationConflictError(
                 "That email address is no longer available.",
             )
 
-        chosen_display_name = (display_name or "").strip() or username
         if _display_name_taken(pending.family, chosen_display_name):
             raise InvitationConflictError(
                 "That display name is already used by someone else in "

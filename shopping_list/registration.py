@@ -36,7 +36,7 @@ class InvalidRegistrationTokenError(RegistrationError):
 
 
 class RegistrationConflictError(RegistrationError):
-    """Username or email is no longer available at completion time."""
+    """Email is no longer available at completion time."""
 
 
 class RegistrationAuthorizationError(RegistrationError):
@@ -196,6 +196,34 @@ def _validate_password_for_candidate(password: str, *, username: str) -> None: #
         raise PasswordPolicyError(exc.messages) from exc
 
 
+# Prefix on auto-generated internal usernames (see
+# generate_internal_username), so they remain recognisable as such to
+# an administrator/superuser browsing Django admin for maintenance --
+# the one audience these are ever meant to be visible to. Shared by
+# every self-service account-creation path (this module and
+# shopping_list.invitations, which imports both names from here).
+INTERNAL_USERNAME_PREFIX = "member_"
+
+
+def generate_internal_username() -> str:
+    """
+    An opaque, globally-unique Django username, generated server-side so
+    no one -- not the applicant, not an inviting admin -- ever needs to
+    choose or see it. It carries no meaning beyond being Django's
+    required login identifier; a person's real, human-facing identity is
+    always their FamilyMembership.display_name, and "Option A" accounts
+    (those with a real email on file) log in by email -- see
+    settings.ACCOUNT_LOGIN_METHODS -- never by this username.
+    """
+    for _ in range(10):
+        candidate = INTERNAL_USERNAME_PREFIX + secrets.token_hex(16)
+        if not User.objects.filter(username__iexact=candidate).exists():
+            return candidate
+    raise RuntimeError(
+        "Could not generate a unique internal username after 10 attempts.",
+    )
+
+
 @dataclass
 class RegistrationCompletionResult:
     user: User
@@ -204,7 +232,7 @@ class RegistrationCompletionResult:
 
 
 def complete_family_admin_registration_for_new_user(
-    *, raw_token: str, username: str, password: str,
+    *, raw_token: str, password: str,
     display_name: Optional[str] = None,
 ) -> RegistrationCompletionResult:
     """
@@ -214,12 +242,15 @@ def complete_family_admin_registration_for_new_user(
     record of a successful registration, so there is nothing left for
     the pending row to track. (Superseded/invalidated pending
     registrations are still retained elsewhere, unaffected by this.)
-    Only a CSRF-protected POST should call this (never a GET).
+    Only a CSRF-protected POST should call this (never a GET). The
+    User's Django username is generated internally (see
+    generate_internal_username) -- the applicant is never asked for one.
     """
     digest = hash_token(raw_token) if raw_token else None
     if digest is None:
         raise InvalidRegistrationTokenError("Missing token.")
 
+    username = generate_internal_username()
     _validate_password_for_candidate(password, username=username)
 
     with transaction.atomic():
@@ -237,8 +268,6 @@ def complete_family_admin_registration_for_new_user(
         if pending.expires_at <= timezone.now():
             raise InvalidRegistrationTokenError("Token expired.")
 
-        if User.objects.filter(username__iexact=username).exists():
-            raise RegistrationConflictError("That username is not available.") # noqa
         if find_existing_user_for_email(pending.email) is not None:
             raise RegistrationConflictError(
                 "That email address is no longer available.",
@@ -247,14 +276,16 @@ def complete_family_admin_registration_for_new_user(
         user = User.objects.create_user(
             username=username, email=pending.email, password=password,
         )
-        # Solo registrations never collect a family name (see
-        # SoloRegistrationRequestView.get_family_name): the family is
-        # simply named after the username just chosen here.
-        family = Family.objects.create(name=pending.family_name or username) # noqa
+        family = Family.objects.create(
+            # Solo registrations never collect a family name (see
+            # SoloRegistrationRequestView.get_family_name): the family is
+            # simply named after the applicant's own display name instead
+            # -- never the generated username, which is meaningless here.
+            name=pending.family_name or pending.display_name,
+            is_solo=not pending.family_name,
+        )
         chosen_display_name = (
-            (display_name or "").strip()
-            or pending.display_name
-            or username
+            (display_name or "").strip() or pending.display_name
         )
         membership = FamilyMembership.objects.create(
             user=user, family=family, role=FamilyMembership.Role.ADMIN,
@@ -269,6 +300,22 @@ def complete_family_admin_registration_for_new_user(
     return RegistrationCompletionResult(
         user=user, family=family, membership=membership,
     )
+
+
+def _default_display_name_for_existing_user(user: User) -> str:
+    """
+    A display-name fallback for an ALREADY-EXISTING user creating
+    another family without supplying a name anywhere in this request
+    (an edge case -- the request-time "Your name" field is normally
+    required): reuse whatever display name they already go by in
+    another family, if any, so they stay recognisable as the same
+    person. Never falls back to their Django username -- even a real,
+    human-chosen one is still a technical identifier, not their
+    human-facing identity (mirrors shopping_list.invitations' own
+    equivalent helper for the member-invitation path).
+    """
+    existing_membership = FamilyMembership.objects.filter(user=user).first()
+    return existing_membership.display_name if existing_membership else ""
 
 
 def complete_family_admin_registration_for_existing_user(
@@ -310,14 +357,20 @@ def complete_family_admin_registration_for_existing_user(
 
         family = Family.objects.create(
             # Mirrors the new-user path: a solo request never collected a
-            # family name, so it defaults to the already-existing user's
-            # own username instead.
-            name=pending.family_name or user.username,
+            # family name, so it defaults to this already-existing user's
+            # own display name instead -- never their Django username,
+            # which may itself be an opaque generated one.
+            name=(
+                pending.family_name
+                or pending.display_name
+                or _default_display_name_for_existing_user(user)
+            ),
+            is_solo=not pending.family_name,
         )
         chosen_display_name = (
             (display_name or "").strip()
             or pending.display_name
-            or user.username
+            or _default_display_name_for_existing_user(user)
         )
         membership = FamilyMembership.objects.create(
             user=user, family=family, role=FamilyMembership.Role.ADMIN,

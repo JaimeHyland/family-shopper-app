@@ -371,7 +371,7 @@ class MemberInvitationServiceTests(TestCase):
         )
 
         membership = complete_invitation_for_new_user(
-            raw_token=result.raw_token, username="joiner_user",
+            raw_token=result.raw_token,
             password="a-very-strong-password-99", display_name="Joiner",
         )
 
@@ -473,28 +473,26 @@ class MemberInvitationServiceTests(TestCase):
 
         with self.assertRaises(InvalidInvitationTokenError):
             complete_invitation_for_new_user(
-                raw_token=result.raw_token, username="too_late",
+                raw_token=result.raw_token, display_name="Too Late",
                 password="a-very-strong-password-99",
             )
-        self.assertFalse(User.objects.filter(username="too_late").exists())
+        self.assertEqual(User.objects.count(), 1)
 
     def test_already_consumed_invitation_cannot_be_reused(self):
         result = invite_member_by_email(
             family=self.family, email="onceonly@example.com",
         )
         complete_invitation_for_new_user(
-            raw_token=result.raw_token, username="once_user",
+            raw_token=result.raw_token, display_name="Once",
             password="a-very-strong-password-99",
         )
 
         with self.assertRaises(InvalidInvitationTokenError):
             complete_invitation_for_new_user(
-                raw_token=result.raw_token, username="twice_user",
+                raw_token=result.raw_token, display_name="Twice",
                 password="a-very-strong-password-99",
             )
-        self.assertFalse(
-            User.objects.filter(username="twice_user").exists(),
-        )
+        self.assertEqual(User.objects.count(), 2)
 
     def test_display_name_conflict_on_completion_is_rejected(self):
         result = invite_member_by_email(
@@ -503,13 +501,11 @@ class MemberInvitationServiceTests(TestCase):
 
         with self.assertRaises(InvitationConflictError):
             complete_invitation_for_new_user(
-                raw_token=result.raw_token, username="clashing_user",
+                raw_token=result.raw_token,
                 password="a-very-strong-password-99",
                 display_name="service_admin",
             )
-        self.assertFalse(
-            User.objects.filter(username="clashing_user").exists(),
-        )
+        self.assertEqual(User.objects.count(), 1)
 
 
 class MemberInvitationCompletionViewTests(TestCase):
@@ -552,10 +548,9 @@ class MemberInvitationCompletionViewTests(TestCase):
                 kwargs={"token": result.raw_token},
             ),
             {
-                "username": "brand_new_member",
                 "password1": "a-very-strong-password-99",
                 "password2": "a-very-strong-password-99",
-                "display_name": "",
+                "display_name": "Brand New Member",
             },
         )
 
@@ -566,10 +561,11 @@ class MemberInvitationCompletionViewTests(TestCase):
             ),
         )
         membership = FamilyMembership.objects.get(
-            user__username="brand_new_member",
+            display_name="Brand New Member",
         )
         self.assertEqual(membership.role, FamilyMembership.Role.MEMBER)
         self.assertEqual(membership.family, self.family)
+        self.assertTrue(membership.user.username.startswith("member_"))
 
     def test_existing_user_must_log_in_as_the_invited_account(self):
         existing_user = User.objects.create_user(

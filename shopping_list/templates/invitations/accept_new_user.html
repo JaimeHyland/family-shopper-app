@@ -3,15 +3,10 @@
 {% block content %}
 <div class="container">
     <h1>Join "{{ family_name }}"</h1>
-    <p>Choose a username and password to finish joining this family.</p>
+    <p>Choose a password and a display name to finish joining this family.</p>
     <form method="post">
         {% csrf_token %}
         {{ form.non_field_errors }}
-        <div class="mb-3">
-            <label for="{{ form.username.id_for_label }}" class="form-label">Username</label> {# noqa #}
-            {{ form.username }}
-            {{ form.username.errors }}
-        </div>
         <div class="mb-3">
             <label for="{{ form.password1.id_for_label }}" class="form-label">Password</label> {# noqa #}
             {{ form.password1 }}
@@ -23,7 +18,7 @@
             {{ form.password2.errors }}
         </div>
         <div class="mb-3">
-            <label for="{{ form.display_name.id_for_label }}" class="form-label">Your display name in this family (optional, defaults to your username)</label> {# noqa #}
+            <label for="{{ form.display_name.id_for_label }}" class="form-label">Your display name in this family</label> {# noqa #}
             {{ form.display_name }}
             {{ form.display_name.errors }}
         </div>

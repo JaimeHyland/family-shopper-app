@@ -101,12 +101,10 @@ class UserGloballyUniqueEmailTests(TestCase):
         from .registration import RegistrationConflictError
         with self.assertRaises(RegistrationConflictError):
             complete_family_admin_registration_for_new_user(
-                raw_token=result.raw_token, username="hopeful_admin",
+                raw_token=result.raw_token,
                 password="a-very-strong-password-99",
             )
-        self.assertFalse(
-            User.objects.filter(username="hopeful_admin").exists(),
-        )
+        self.assertEqual(User.objects.count(), 1)
 
 
 class UsernameNotConfusedWithDisplayNameTests(TestCase):
@@ -163,23 +161,24 @@ class FamilyIdentityDoesNotDeriveFromEmailTests(TestCase):
     email address."
     """
 
-    def test_solo_registration_without_a_family_name_defaults_to_username_not_email(self): # noqa
+    def test_solo_registration_without_a_family_name_defaults_to_display_name_not_email(self): # noqa
         result = request_family_admin_registration(
             family_name="", email="jordan.identity@example.com",
+            display_name="Jordan Solo",
         )
 
         completion = complete_family_admin_registration_for_new_user(
-            raw_token=result.raw_token, username="jordan_solo",
+            raw_token=result.raw_token,
             password="a-very-strong-password-99",
         )
 
-        self.assertEqual(completion.family.name, "jordan_solo")
+        self.assertEqual(completion.family.name, "Jordan Solo")
         self.assertNotIn("jordan.identity", completion.family.name)
         self.assertNotIn("example.com", completion.family.name)
         self.assertNotIn("@", completion.family.name)
         self.assertNotIn("@", completion.family.slug)
 
-    def test_existing_user_creating_a_second_family_without_a_name_defaults_to_username_not_email(self): # noqa
+    def test_existing_user_creating_a_second_family_without_a_name_defaults_to_display_name_not_email(self): # noqa
         existing_user = User.objects.create_user(
             username="second_family_person",
             password="a-very-strong-password-99",
@@ -191,13 +190,14 @@ class FamilyIdentityDoesNotDeriveFromEmailTests(TestCase):
         )
         result = request_family_admin_registration(
             family_name="", email="second.family@example.com",
+            display_name="Second Family Owner",
         )
 
         completion = complete_family_admin_registration_for_existing_user(
             raw_token=result.raw_token, user=existing_user,
         )
 
-        self.assertEqual(completion.family.name, "second_family_person")
+        self.assertEqual(completion.family.name, "Second Family Owner")
         self.assertNotIn("second.family", completion.family.name)
         self.assertNotIn("@", completion.family.name)
 

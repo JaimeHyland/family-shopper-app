@@ -60,6 +60,20 @@ INSTALLED_APPS = [
 
 LOGIN_URL = 'logged_out_homepage'
 
+# ModelBackend is tried first and handles two cases unaffected by the
+# email-based ACCOUNT_AUTHENTICATION_METHOD below: Django admin login,
+# and shopping_list.family_login_views.FamilyLoginView's direct call to
+# authenticate() with the member's own Django username (resolved by
+# family-local display name, not touching allauth's own login form
+# at all). allauth's own backend is additionally required for its
+# /accounts/login/ page to be able to authenticate by email instead of
+# username -- without it, Django's ModelBackend alone cannot do so (it
+# only ever looks up by the username field).
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
+    'allauth.account.auth_backends.AuthenticationBackend',
+]
+
 # Required by django-allauth
 SITE_ID = 1
 # 'shopping_list' now requires a family_slug, so post-login routing
@@ -158,9 +172,21 @@ AUTH_PASSWORD_VALIDATORS = [
 # verified-email flow instead; ordinary/managed members are unaffected and
 # may still have no email address at all.)
 ACCOUNT_EMAIL_VERIFICATION = 'none'
-# Keeps username/password login working as-is; login is not made ambiguous
-# or email-based. New Family admins log in the same way, via username.
 ACCOUNT_ADAPTER = 'shopping_list.adapters.NoPublicSignupAccountAdapter'
+# "Option A" accounts (solo users, Family admins, email-invited members)
+# have an internal, randomly-generated Django username (see
+# shopping_list.registration.generate_internal_username) -- never shown
+# to or chosen by anyone -- so allauth's standard /accounts/login/ page
+# must authenticate by email instead of username, or it would be
+# unusable. No-email members are unaffected: they never use this page at
+# all, authenticating instead via their family-local display name (see
+# shopping_list.family_login_views.FamilyLoginView), which calls Django's
+# authenticate() directly regardless of this setting. (This installed
+# allauth version predates ACCOUNT_LOGIN_METHODS; it still uses the
+# older, singular ACCOUNT_AUTHENTICATION_METHOD/ACCOUNT_EMAIL_REQUIRED
+# settings instead.)
+ACCOUNT_AUTHENTICATION_METHOD = "email"
+ACCOUNT_EMAIL_REQUIRED = True
 # Enforces "a User account has a globally unique email address" (one
 # persistent identity, not a freely-growing list of addresses): without
 # this, allauth's own /accounts/email/ page lets an account accumulate

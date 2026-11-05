@@ -43,13 +43,16 @@ class LoginTemplateTests(TestCase):
         # URL name; allauth's post-login redirect goes through the
         # homepage's membership-aware routing instead.
         family = Family.objects.create(name="Login Redirect Family")
-        user = User.objects.create_user(username="login_redirect_user", password="pass1234") # noqa
+        user = User.objects.create_user(
+            username="login_redirect_user",
+            email="login.redirect@example.com",
+        password="pass1234") # noqa
         FamilyMembership.objects.create(
             family=family, user=user, display_name="LoginRedirect",
         )
 
         response = self.client.post(reverse("account_login"), {
-            "login": "login_redirect_user",
+            "login": "login.redirect@example.com",
             "password": "pass1234",
         })
 
@@ -61,6 +64,35 @@ class LoginTemplateTests(TestCase):
             follow_up,
             reverse("shopping_list", kwargs={"family_slug": family.slug}), # noqa
         )
+
+    def test_password_reset_still_works_by_email_for_a_generated_username(self): # noqa
+        # Confirms password recovery is unaffected by the move to
+        # opaque, auto-generated usernames (ACCOUNT_LOGIN_METHODS =
+        # {"email"}): allauth's reset request form is itself always
+        # email-based, regardless of login method, and the email it's
+        # sent to resolves correctly even though the account's Django
+        # username is now a meaningless internal identifier.
+        family = Family.objects.create(name="Reset Family")
+        user = User.objects.create_user(
+            username="member_abc123",
+            email="reset.target@example.com",
+            password="a-very-strong-password-99",
+        )
+        FamilyMembership.objects.create(
+            family=family, user=user, display_name="ResetTarget",
+        )
+        EmailAddress.objects.create(
+            user=user, email="reset.target@example.com",
+            verified=True, primary=True,
+        )
+
+        response = self.client.post(reverse("account_reset_password"), {
+            "email": "reset.target@example.com",
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["reset.target@example.com"])
 
 
 class HomepageRoutingTests(TestCase):
@@ -123,6 +155,41 @@ class HomepageRoutingTests(TestCase):
             response, "does not currently belong to any family", status_code=403, # noqa
         )
         self.assertContains(response, "Log out", status_code=403)
+
+    def test_superuser_without_family_is_redirected_to_admin(self):
+        # A superuser with no family is the normal, by-design state --
+        # not the same anomaly as an ordinary orphaned user, so this
+        # must NOT show the 403 "no family" page.
+        superuser = User.objects.create_superuser(
+            username="admin_no_family",
+        )
+        self.client.force_login(superuser)
+
+        response = self.client.get(reverse("logged_out_homepage"))
+
+        self.assertRedirects(
+            response, reverse("admin:index"), fetch_redirect_response=False,
+        )
+
+    def test_superuser_with_a_family_is_unaffected(self):
+        # A superuser who ALSO happens to hold a membership (e.g. a dev
+        # account) must still go through the ordinary membership-count
+        # logic, unchanged.
+        superuser = User.objects.create_superuser(
+            username="admin_with_family",
+        )
+        family = Family.objects.create(name="Admin Family")
+        FamilyMembership.objects.create(
+            family=family, user=superuser, display_name="Admin",
+        )
+        self.client.force_login(superuser)
+
+        response = self.client.get(reverse("logged_out_homepage"))
+
+        self.assertRedirects(
+            response,
+            reverse("shopping_list", kwargs={"family_slug": family.slug}), # noqa
+        )
 
     def test_authenticated_user_with_multiple_memberships_sees_chooser(self):
         user = User.objects.create_user(username="multi_home", password="pass1234") # noqa
@@ -217,7 +284,10 @@ class RegistrationRequestViewTests(TestCase):
             "email": "New.Admin@Example.com",
         })
 
-        self.assertRedirects(response, reverse("registration_check_email"))
+        self.assertRedirects(
+            response,
+            reverse("registration_check_email") + "?mode=family",
+        )
         self.assertEqual(len(mail.outbox), 1)
         self.assertIn("New.Admin@Example.com".lower(), mail.outbox[0].to[0].lower()) # noqa
         self.assertEqual(User.objects.count(), 0)
@@ -256,7 +326,10 @@ class RegistrationRequestViewTests(TestCase):
             "email": "existing@example.com",
         })
 
-        self.assertRedirects(response, reverse("registration_check_email"))
+        self.assertRedirects(
+            response,
+            reverse("registration_check_email") + "?mode=family",
+        )
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(
             PendingFamilyAdminRegistration.objects.filter(
@@ -342,7 +415,10 @@ class SoloRegistrationRequestViewTests(TestCase):
             "email": "solo.new@example.com",
         })
 
-        self.assertRedirects(response, reverse("registration_check_email"))
+        self.assertRedirects(
+            response,
+            reverse("registration_check_email") + "?mode=solo",
+        )
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(User.objects.count(), 0)
         self.assertEqual(Family.objects.count(), 0)
@@ -355,9 +431,25 @@ class SoloRegistrationRequestViewTests(TestCase):
         # username is chosen at completion.
         self.assertEqual(pending.family_name, "")
 
-    def test_completion_defaults_the_family_name_to_the_chosen_username(self): # noqa
+    def test_solo_check_email_page_refers_to_account_not_family(self):
+        response = self.client.get(
+            reverse("registration_check_email") + "?mode=solo",
+        )
+
+        self.assertContains(response, "create your account")
+        self.assertNotContains(response, "register a family")
+
+    def test_family_check_email_page_still_mentions_family(self):
+        response = self.client.get(
+            reverse("registration_check_email") + "?mode=family",
+        )
+
+        self.assertContains(response, "register a family")
+
+    def test_completion_defaults_the_family_name_to_the_display_name(self): # noqa
         result = request_family_admin_registration(
             family_name="", email="solo.complete@example.com",
+            display_name="Solo Applicant",
         )
 
         response = self.client.post(
@@ -366,24 +458,24 @@ class SoloRegistrationRequestViewTests(TestCase):
                 kwargs={"token": result.raw_token},
             ),
             {
-                "username": "solo_user",
                 "password1": "a-very-strong-password-99",
                 "password2": "a-very-strong-password-99",
                 "display_name": "",
             },
         )
 
-        family = Family.objects.get(name="solo_user")
+        family = Family.objects.get(name="Solo Applicant")
         self.assertRedirects(
             response,
             reverse("seed_lists", kwargs={"family_slug": family.slug}), # noqa
         )
         self.assertEqual(family.memberships.count(), 1)
+        self.assertTrue(family.is_solo)
         membership = family.memberships.get()
-        self.assertEqual(membership.user.username, "solo_user")
+        self.assertTrue(membership.user.username.startswith("member_"))
         self.assertEqual(membership.role, FamilyMembership.Role.ADMIN)
 
-    def test_full_solo_signup_journey_names_the_family_after_the_username(self): # noqa
+    def test_full_solo_signup_journey_names_the_family_after_the_display_name(self): # noqa
         self.client.post(reverse("solo_registration_request"), {
             "name": "Jaime Hyland",
             "email": "solo.fulljourney@example.com",
@@ -393,7 +485,6 @@ class SoloRegistrationRequestViewTests(TestCase):
         response = self.client.post(
             reverse("registration_complete", kwargs={"token": raw_token}),
             {
-                "username": "jaime_solo",
                 "password1": "a-very-strong-password-99",
                 "password2": "a-very-strong-password-99",
                 "display_name": "",
@@ -401,11 +492,13 @@ class SoloRegistrationRequestViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 302)
-        family = Family.objects.get(name="jaime_solo")
+        family = Family.objects.get(name="Jaime Hyland")
         membership = family.memberships.get()
         # The person's own name is still kept as their display name --
-        # only the family name defaults to the username.
+        # the family name defaults to that same name too, since there
+        # is no username for either to default to any more.
         self.assertEqual(membership.display_name, "Jaime Hyland")
+        self.assertTrue(membership.user.username.startswith("member_"))
 
 
 class ApplicantNameCarriedThroughTests(TestCase):
@@ -467,7 +560,6 @@ class ApplicantNameCarriedThroughTests(TestCase):
                 "registration_complete", kwargs={"token": result.raw_token},
             ),
             {
-                "username": "jamie_user",
                 "password1": "a-very-strong-password-99",
                 "password2": "a-very-strong-password-99",
                 "display_name": "",
@@ -476,7 +568,7 @@ class ApplicantNameCarriedThroughTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         membership = FamilyMembership.objects.get(
-            user__username="jamie_user",
+            user__email="jamie3@example.com",
         )
         self.assertEqual(membership.display_name, "Jamie Doe")
 
@@ -490,7 +582,6 @@ class ApplicantNameCarriedThroughTests(TestCase):
         response = self.client.post(
             reverse("registration_complete", kwargs={"token": raw_token}),
             {
-                "username": "solo_journey_user",
                 "password1": "a-very-strong-password-99",
                 "password2": "a-very-strong-password-99",
                 "display_name": "",
@@ -499,9 +590,75 @@ class ApplicantNameCarriedThroughTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         membership = FamilyMembership.objects.get(
-            user__username="solo_journey_user",
+            user__email="solo.journey@example.com",
         )
         self.assertEqual(membership.display_name, "Solo Person")
+
+    def test_solo_completion_shows_account_created_not_family_created(self): # noqa
+        self.client.post(reverse("solo_registration_request"), {
+            "name": "Solo Welcome", "email": "solo.welcome@example.com",
+        })
+        raw_token = self._raw_token_from_outbox()
+
+        response = self.client.post(
+            reverse("registration_complete", kwargs={"token": raw_token}),
+            {
+                "password1": "a-very-strong-password-99",
+                "password2": "a-very-strong-password-99",
+                "display_name": "",
+            },
+            follow=True,
+        )
+
+        self.assertContains(response, "Your account has been created.")
+        self.assertNotContains(response, "Your family has been created.")
+
+    def test_family_completion_still_shows_family_created_message(self):
+        result = request_family_admin_registration(
+            family_name="Welcome Family", email="family.welcome@example.com",
+        )
+
+        response = self.client.post(
+            reverse(
+                "registration_complete", kwargs={"token": result.raw_token},
+            ),
+            {
+                "password1": "a-very-strong-password-99",
+                "password2": "a-very-strong-password-99",
+                "display_name": "",
+            },
+            follow=True,
+        )
+
+        self.assertContains(response, "Your family has been created.")
+
+    def test_solo_completion_page_hides_the_family_display_name_field(self):
+        self.client.post(reverse("solo_registration_request"), {
+            "name": "Solo NoFamily", "email": "solo.nofamily@example.com",
+        })
+        raw_token = self._raw_token_from_outbox()
+
+        response = self.client.get(
+            reverse("registration_complete", kwargs={"token": raw_token}),
+        )
+
+        self.assertNotContains(response, "display name in this family")
+        self.assertContains(response, "Create my account")
+        self.assertNotContains(response, "Create my family")
+
+    def test_family_completion_page_still_shows_the_display_name_field(self):
+        result = request_family_admin_registration(
+            family_name="Still Shown Family", email="stillshown@example.com",
+        )
+
+        response = self.client.get(
+            reverse(
+                "registration_complete", kwargs={"token": result.raw_token},
+            ),
+        )
+
+        self.assertContains(response, "display name in this family")
+        self.assertContains(response, "Create my family")
 
 
 class NavigationAuthStateTests(TestCase):
@@ -545,7 +702,9 @@ class NavigationAuthStateTests(TestCase):
             reverse("shopping_list", kwargs={"family_slug": family.slug}),
         )
 
-        self.assertContains(response, "You are logged in as nav_child")
+        self.assertContains(
+            response, "You are logged in as Child (Nav Family)",
+        )
         self.assertContains(response, "Logout")
 
 
@@ -565,9 +724,8 @@ class RegistrationCompletionViewTests(TestCase):
         )
         return result.raw_token, result.pending_registration
 
-    def _new_user_payload(self, username):
+    def _new_user_payload(self):
         return {
-            "username": username,
             "password1": "a-very-strong-password-99",
             "password2": "a-very-strong-password-99",
             "display_name": "",
@@ -618,12 +776,14 @@ class RegistrationCompletionViewTests(TestCase):
 
         post_response = self.client.post(
             reverse("registration_complete", kwargs={"token": raw_token}),
-            self._new_user_payload("jordan_doe"),
+            self._new_user_payload(),
         )
 
         self.assertEqual(post_response.status_code, 302)
         family = Family.objects.get(name="The Does")
-        self.assertEqual(family.memberships.get().user.username, "jordan_doe") # noqa
+        self.assertTrue(
+            family.memberships.get().user.username.startswith("member_"),
+        )
 
     def test_successful_completion_creates_user_family_and_admin_membership(self): # noqa
         raw_token, _pending = self._request_registration(
@@ -632,7 +792,7 @@ class RegistrationCompletionViewTests(TestCase):
 
         response = self.client.post(
             reverse("registration_complete", kwargs={"token": raw_token}),
-            self._new_user_payload("new_family_admin"),
+            self._new_user_payload(),
         )
 
         family = Family.objects.get(name="Successful Family")
@@ -640,12 +800,14 @@ class RegistrationCompletionViewTests(TestCase):
             response,
             reverse("seed_lists", kwargs={"family_slug": family.slug}), # noqa
         )
-        self.assertEqual(User.objects.filter(username="new_family_admin").count(), 1) # noqa
+        self.assertEqual(User.objects.filter(email="admin2@example.com").count(), 1) # noqa
 
-        user = User.objects.get(username="new_family_admin")
+        user = User.objects.get(email="admin2@example.com")
+        self.assertTrue(user.username.startswith("member_"))
         membership = FamilyMembership.objects.get(user=user)
         self.assertEqual(membership.role, FamilyMembership.Role.ADMIN)
         self.assertEqual(membership.family.name, "Successful Family")
+        self.assertFalse(membership.family.is_solo)
         # The pending registration is deleted, not merely marked
         # consumed, once it has been successfully fulfilled.
         self.assertFalse(
@@ -660,10 +822,10 @@ class RegistrationCompletionViewTests(TestCase):
         )
         self.client.post(
             reverse("registration_complete", kwargs={"token": raw_token}),
-            self._new_user_payload("verified_admin"),
+            self._new_user_payload(),
         )
 
-        user = User.objects.get(username="verified_admin")
+        user = User.objects.get(email="verified@example.com")
         email_address = EmailAddress.objects.get(user=user)
         self.assertTrue(email_address.verified)
         self.assertTrue(email_address.primary)
@@ -679,11 +841,11 @@ class RegistrationCompletionViewTests(TestCase):
 
         self.client.post(
             reverse("registration_complete", kwargs={"token": raw_token_a}),
-            self._new_user_payload("dup_admin_a"),
+            self._new_user_payload(),
         )
         self.client.post(
             reverse("registration_complete", kwargs={"token": raw_token_b}),
-            self._new_user_payload("dup_admin_b"),
+            self._new_user_payload(),
         )
 
         families = Family.objects.filter(name="Same Name")
@@ -700,19 +862,19 @@ class RegistrationCompletionViewTests(TestCase):
 
         response = self.client.post(
             reverse("registration_complete", kwargs={"token": raw_token}),
-            self._new_user_payload("expired_admin"),
+            self._new_user_payload(),
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertFalse(User.objects.filter(username="expired_admin").exists()) # noqa
+        self.assertEqual(User.objects.count(), 0)
 
     def test_invalid_token_post_cannot_create_account(self):
         response = self.client.post(
             reverse("registration_complete", kwargs={"token": "bogus-token"}),
-            self._new_user_payload("bogus_admin"),
+            self._new_user_payload(),
         )
         self.assertEqual(response.status_code, 400)
-        self.assertFalse(User.objects.filter(username="bogus_admin").exists()) # noqa
+        self.assertEqual(User.objects.count(), 0)
 
     def test_already_consumed_token_cannot_be_reused(self):
         raw_token, _pending = self._request_registration(
@@ -720,35 +882,16 @@ class RegistrationCompletionViewTests(TestCase):
         )
         self.client.post(
             reverse("registration_complete", kwargs={"token": raw_token}),
-            self._new_user_payload("reused_admin_one"),
+            self._new_user_payload(),
         )
 
         response = self.client.post(
             reverse("registration_complete", kwargs={"token": raw_token}),
-            self._new_user_payload("reused_admin_two"),
+            self._new_user_payload(),
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertFalse(
-            User.objects.filter(username="reused_admin_two").exists(),
-        )
-
-    def test_username_collision_is_handled_safely(self):
-        User.objects.create_user(username="taken_name", password="pass1234")
-        raw_token, _pending = self._request_registration(
-            email="collision@example.com", family_name="Collision Family",
-        )
-
-        response = self.client.post(
-            reverse("registration_complete", kwargs={"token": raw_token}),
-            self._new_user_payload("taken_name"),
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(User.objects.filter(username="taken_name").count(), 1) # noqa
-        self.assertFalse(
-            Family.objects.filter(name="Collision Family").exists(),
-        )
+        self.assertEqual(User.objects.count(), 1)
 
     def test_email_collision_at_completion_time_rolls_back_everything(self):
         raw_token, pending = self._request_registration(
@@ -763,11 +906,10 @@ class RegistrationCompletionViewTests(TestCase):
         with self.assertRaises(RegistrationConflictError):
             complete_family_admin_registration_for_new_user(
                 raw_token=raw_token,
-                username="race_admin",
                 password="strong-password-99",
             )
 
-        self.assertFalse(User.objects.filter(username="race_admin").exists()) # noqa
+        self.assertEqual(User.objects.count(), 1)
         self.assertFalse(Family.objects.filter(name="Race Family").exists())
         pending.refresh_from_db()
         self.assertIsNone(pending.consumed_at)
@@ -779,10 +921,10 @@ class RegistrationCompletionViewTests(TestCase):
 
         with self.assertRaises(PasswordPolicyError):
             complete_family_admin_registration_for_new_user(
-                raw_token=raw_token, username="weak_admin", password="12345",
+                raw_token=raw_token, password="12345",
             )
 
-        self.assertFalse(User.objects.filter(username="weak_admin").exists()) # noqa
+        self.assertEqual(User.objects.count(), 0)
         self.assertFalse(Family.objects.filter(name="Weak Family").exists())
 
 
@@ -852,7 +994,7 @@ class ExistingEmailRegistrationTests(TestCase):
         login_link = login_link.replace("&amp;", "&")
 
         login_response = self.client.post(login_link, {
-            "login": "existing_owner",
+            "login": "owner@example.com",
             "password": "a-known-test-password-99",
         })
 
@@ -920,6 +1062,33 @@ class ExistingEmailRegistrationTests(TestCase):
             ).exists(),
         )
 
+    def test_solo_request_for_existing_account_shows_account_created_message(self): # noqa
+        raw_token = self._request(family_name="")
+        self.client.force_login(self.existing_user)
+
+        response = self.client.post(
+            reverse("registration_complete", kwargs={"token": raw_token}),
+            {"display_name": ""}, follow=True,
+        )
+
+        self.assertContains(response, "Your new account has been created.")
+        self.assertNotContains(response, "Your new family has been created.") # noqa
+        self.assertTrue(
+            Family.objects.get(name="Owner").is_solo,
+        )
+
+    def test_solo_request_for_existing_account_hides_family_display_name_field(self): # noqa
+        raw_token = self._request(family_name="")
+        self.client.force_login(self.existing_user)
+
+        response = self.client.get(
+            reverse("registration_complete", kwargs={"token": raw_token}),
+        )
+
+        self.assertNotContains(response, "display name in this family")
+        self.assertContains(response, "Confirm my account")
+        self.assertNotContains(response, "Create this family")
+
     def test_service_function_directly_for_existing_user(self):
         raw_token = self._request(family_name="Direct Service Family")
 
@@ -929,6 +1098,7 @@ class ExistingEmailRegistrationTests(TestCase):
         )
 
         self.assertEqual(result.family.name, "Direct Service Family")
+        self.assertFalse(result.family.is_solo)
         self.assertEqual(result.membership.display_name, "Direct")
         self.assertEqual(User.objects.count(), 1)
         self.assertFalse(
@@ -968,18 +1138,18 @@ class RegistrationServiceUnitTests(TestCase):
     def test_complete_registration_end_to_end(self):
         result = request_family_admin_registration(
             family_name="Service Family", email="service@example.com",
+            display_name="Service Admin",
         )
 
         completion = complete_family_admin_registration_for_new_user(
             raw_token=result.raw_token,
-            username="service_admin",
             password="a-strong-password-99",
         )
 
-        self.assertEqual(completion.user.username, "service_admin")
+        self.assertTrue(completion.user.username.startswith("member_"))
         self.assertEqual(completion.family.name, "Service Family")
         self.assertEqual(completion.membership.role, FamilyMembership.Role.ADMIN) # noqa
-        self.assertEqual(completion.membership.display_name, "service_admin") # noqa
+        self.assertEqual(completion.membership.display_name, "Service Admin") # noqa
         self.assertFalse(
             PendingFamilyAdminRegistration.objects.filter(
                 email="service@example.com",

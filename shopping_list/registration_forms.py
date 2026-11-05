@@ -1,7 +1,4 @@
 from django import forms
-from django.contrib.auth.forms import UsernameField
-from django.contrib.auth.models import User
-from django.contrib.auth.validators import UnicodeUsernameValidator
 
 
 class FamilyAdminRegistrationRequestForm(forms.Form):
@@ -35,21 +32,15 @@ class SoloRegistrationRequestForm(forms.Form):
 
 
 class FamilyAdminRegistrationCompletionForm(forms.Form):
-    """Stage 2 (new email): choose the account's username and password."""
+    """
+    Stage 2 (new email): choose the account's password. The Django
+    username is generated internally and never shown or chosen here --
+    see shopping_list.registration.generate_internal_username.
+    """
 
-    username = UsernameField(
-        max_length=150,
-        validators=[UnicodeUsernameValidator()],
-    )
     password1 = forms.CharField(strip=False, widget=forms.PasswordInput)
     password2 = forms.CharField(strip=False, widget=forms.PasswordInput)
     display_name = forms.CharField(max_length=100, required=False)
-
-    def clean_username(self):
-        username = self.cleaned_data["username"]
-        if User.objects.filter(username__iexact=username).exists():
-            raise forms.ValidationError("That username is already taken.")
-        return username
 
     def clean_display_name(self):
         return self.cleaned_data["display_name"].strip()

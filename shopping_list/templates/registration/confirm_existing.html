@@ -11,12 +11,18 @@
     <form method="post">
         {% csrf_token %}
         {{ form.non_field_errors }}
+        {% if family_name %}
         <div class="mb-3">
-            <label for="{{ form.display_name.id_for_label }}" class="form-label">Your display name in this family (optional, defaults to your username)</label> {# noqa #}
+            <label for="{{ form.display_name.id_for_label }}" class="form-label">Your display name in this family (optional, defaults to the name you gave earlier)</label> {# noqa #}
             {{ form.display_name }}
             {{ form.display_name.errors }}
         </div>
+        {% endif %}
+        {% if family_name %}
         <button type="submit" class="btn btn-primary">Create this family</button>
+        {% else %}
+        <button type="submit" class="btn btn-primary">Confirm my account</button>
+        {% endif %}
     </form>
 </div>
 {% endblock %}
