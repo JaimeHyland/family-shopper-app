@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from django.conf import settings
 from django.core.exceptions import (
     ImproperlyConfigured,
     PermissionDenied,
@@ -75,6 +76,36 @@ def load_seed_lists():
     if not seeds:
         raise ImproperlyConfigured("No shopping-list seed files were found.")
     return seeds
+
+
+def get_default_seed_id(seeds, family):
+    """
+    The seed_id (a key into `seeds`, i.e. a seed_data/*.json filename
+    stem) to pre-select the first time a member visits the seed-list
+    page, chosen according to the kind of family they belong to --
+    configured via settings.DEFAULT_SEED_LIST_BY_USER_TYPE, so either
+    default can be changed without touching this function, and the JSON
+    dataset files themselves carry no notion of who defaults to them.
+
+    "User type" comes from Family.is_solo, set once at registration
+    time (see shopping_list.registration), not from the family's
+    current membership count: a freshly-registered family admin also
+    starts out with exactly one membership, indistinguishable from a
+    solo user on membership count alone until other members are invited.
+
+    Only the "solo"/"family" dimension is implemented now; the
+    configuration dict's keys could later be extended to also vary by
+    locale/geography (e.g. a (user_type, locale) tuple) without
+    changing this function's signature or callers.
+    """
+    user_type = "solo" if family.is_solo else "family"
+    seed_id = settings.DEFAULT_SEED_LIST_BY_USER_TYPE.get(user_type)
+    if seed_id in seeds:
+        return seed_id
+    # Configured default missing or its file no longer exists -- fall
+    # back to the previous behaviour (the first available seed list)
+    # rather than erroring out on what is otherwise a working page.
+    return next(iter(seeds))
 
 
 def import_seed_products(request, seed_id, selected_names):

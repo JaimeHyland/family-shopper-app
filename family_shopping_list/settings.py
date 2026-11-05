@@ -207,6 +207,21 @@ ACCOUNT_RATE_LIMITS = {
     "family_login_failed": "10/m/ip,5/5m/key",
 }
 
+# Which seed-list JSON dataset (see shopping_list.seed_lists -- the
+# key here is the filename stem under shopping_list/seed_data/) a
+# member sees pre-selected the first time they visit the seed-list
+# page, based on the kind of family they belong to. Deliberately kept
+# as plain, separate configuration: the JSON dataset files carry no
+# notion of who should default to them, and nothing in the selection
+# code itself needs to change to point either user type at a different
+# dataset -- only this mapping. Only "solo"/"family" are used today;
+# the key could later become a tuple such as (user_type, locale)
+# without changing the lookup function's shape.
+DEFAULT_SEED_LIST_BY_USER_TYPE = {
+    "solo": "irish_student_essentials",
+    "family": "irish_family_small_children",
+}
+
 # Email
 # https://docs.djangoproject.com/en/5.1/topics/email/
 EMAIL_BACKEND = os.environ.get(

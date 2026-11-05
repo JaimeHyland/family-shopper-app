@@ -14,7 +14,7 @@ from django.core.exceptions import (
 from django.core import mail
 from django.db import close_old_connections
 from django.test import (
-    Client, SimpleTestCase, TransactionTestCase, override_settings,
+    Client, SimpleTestCase, TestCase, TransactionTestCase, override_settings,
 )
 from django.urls import reverse
 from django.utils import timezone
@@ -23,8 +23,11 @@ from family_shopping_list.consumers import ShoppingConsumer
 from .models import (
     Category, Family, FamilyMembership, ListItem, Product, ShoppingList,
 )
-from .seed_lists import import_seed_products, load_seed_lists
-from .tests import TwoFamilyFixtureMixin, TwoFamilyTestCase, ws_path
+from .seed_lists import get_default_seed_id, import_seed_products, load_seed_lists
+from .tests import (
+    TwoFamilyFixtureMixin, TwoFamilyTestCase, create_family_with_members,
+    ws_path,
+)
 
 
 SEED_ID = "irish_student_essentials"
@@ -61,6 +64,48 @@ class SeedDataTests(SimpleTestCase):
             )]
             with self.assertRaises(ImproperlyConfigured):
                 load_seed_lists()
+
+
+class DefaultSeedSelectionTests(TwoFamilyFixtureMixin, TestCase):
+    def test_a_solo_family_defaults_to_the_configured_solo_seed(self):
+        solo_family, _, _ = create_family_with_members(
+            "Solo", "solo_admin", is_solo=True,
+        )
+        seeds = load_seed_lists()
+        self.assertEqual(
+            get_default_seed_id(seeds, solo_family), "irish_student_essentials",
+        )
+
+    def test_a_multi_member_family_defaults_to_the_configured_family_seed(self): # noqa
+        # family_a (from TwoFamilyFixtureMixin) is not solo (is_solo
+        # defaults to False and it has an admin plus one member).
+        seeds = load_seed_lists()
+        self.assertEqual(
+            get_default_seed_id(seeds, self.family_a),
+            "irish_family_small_children",
+        )
+
+    def test_a_freshly_registered_family_admin_with_no_other_members_yet_still_defaults_to_the_family_seed(self): # noqa
+        # The key case is_solo was introduced for: a family admin who
+        # has just registered, before inviting anyone else, still has
+        # only one membership -- membership count alone cannot tell
+        # this apart from a genuine solo user.
+        family, _, _ = create_family_with_members(
+            "New family", "new_admin", is_solo=False,
+        )
+        seeds = load_seed_lists()
+        self.assertEqual(
+            get_default_seed_id(seeds, family), "irish_family_small_children",
+        )
+
+    @override_settings(DEFAULT_SEED_LIST_BY_USER_TYPE={
+        "solo": "no-such-seed", "family": "no-such-seed",
+    })
+    def test_falls_back_to_the_first_available_seed_if_configured_default_is_missing(self): # noqa
+        seeds = load_seed_lists()
+        self.assertEqual(
+            get_default_seed_id(seeds, self.family_a), next(iter(seeds)),
+        )
 
 
 class SeedImportTests(TwoFamilyTestCase):
@@ -384,6 +429,15 @@ class SeedSelectionViewTests(TwoFamilyTestCase):
             self.assertContains(response, "seed_selection.js")
         self.assertEqual(list(ListItem.objects.order_by("pk").values()), before)
 
+    def test_default_seed_without_an_explicit_choice_matches_family_type(self):
+        # family_a has an admin plus one ordinary member, i.e. more than
+        # one member, so it gets the configured "family" default.
+        response = self.client.get(self.url)
+        self.assertContains(
+            response,
+            '<option value="irish_family_small_children" selected>',
+        )
+
     def test_seed_list_dropdown_auto_submits_on_change(self):
         # Changing the dropdown must refresh the page to the chosen
         # seed list without requiring a separate button click.
@@ -530,30 +584,34 @@ class SeedSelectionViewTests(TwoFamilyTestCase):
         from allauth.account.models import EmailAddress
         from django.contrib.auth.models import User
 
-        for route, payload, username in [
+        for route, payload, email in [
             ("solo_registration_request",
-             {"name": "New solo", "email": "newsolo@example.com"}, "seed_solo"),
+             {"name": "New solo", "email": "newsolo@example.com"},
+             "newsolo@example.com"),
             ("family_registration_request",
              {"admin_name": "New admin", "family_name": "New family",
-              "email": "newfamily@example.com"}, "seed_family"),
+              "email": "newfamily@example.com"}, "newfamily@example.com"),
         ]:
             with self.subTest(route=route):
                 self.client.logout()
                 response = self.client.post(reverse(route), payload)
+                expected_mode = route.split("_")[0]  # "solo" or "family"
                 self.assertRedirects(
-                    response, reverse("registration_check_email"),
+                    response,
+                    reverse("registration_check_email")
+                    + f"?mode={expected_mode}",
                 )
-                self.assertFalse(User.objects.filter(username=username).exists())
+                self.assertFalse(User.objects.filter(email=email).exists())
                 token = mail.outbox[-1].body.split("verify/")[1].split("/")[0]
                 response = self.client.post(reverse(
                     "registration_complete", kwargs={"token": token},
                 ), {
-                    "username": username,
                     "password1": "a-very-strong-password-99",
                     "password2": "a-very-strong-password-99",
                     "display_name": "New user",
                 })
-                user = User.objects.get(username=username)
+                user = User.objects.get(email=email)
+                self.assertTrue(user.username.startswith("member_"))
                 membership = FamilyMembership.objects.get(user=user)
                 self.assertEqual(membership.role, FamilyMembership.Role.ADMIN)
                 self.assertTrue(EmailAddress.objects.get(user=user).verified)
@@ -566,3 +624,10 @@ class SeedSelectionViewTests(TwoFamilyTestCase):
                 page = self.client.get(response["Location"])
                 self.assertContains(page, "Product catalogue starters")
                 self.assertContains(page, "Back to products")
+                expected_seed_id = {
+                    "solo": "irish_student_essentials",
+                    "family": "irish_family_small_children",
+                }[expected_mode]
+                self.assertContains(
+                    page, f'<option value="{expected_seed_id}" selected>',
+                )

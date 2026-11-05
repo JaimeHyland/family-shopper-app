@@ -47,7 +47,7 @@ class UserAdmin(DjangoUserAdmin):
 
 
 class FamilyAdmin(admin.ModelAdmin):
-    list_display = ('name', 'public_id', 'date_created')
+    list_display = ('name', 'is_solo', 'public_id', 'date_created')
     readonly_fields = ('public_id', 'date_created')
     search_fields = ('name',)
 

@@ -8,7 +8,7 @@ from django.utils.decorators import method_decorator
 from django.views import View
 
 from utilities.utils import has_family_permission
-from .seed_lists import import_seed_products, load_seed_lists
+from .seed_lists import get_default_seed_id, import_seed_products, load_seed_lists
 from .views import FamilyMembershipRequiredMixin
 
 
@@ -27,7 +27,9 @@ class SeedSelectionForm(forms.Form):
 class SeedListView(FamilyMembershipRequiredMixin, View):
     def get(self, request, *args, **kwargs):
         seeds = load_seed_lists()
-        seed_id = request.GET.get("seed", next(iter(seeds)))
+        seed_id = request.GET.get("seed") or get_default_seed_id(
+            seeds, request.family,
+        )
         seed = self.get_seed(seeds, seed_id)
         selected = {
             name for category in seed["categories"]
