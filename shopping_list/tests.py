@@ -7,6 +7,7 @@ from django.utils import timezone
 from types import SimpleNamespace
 import threading
 
+from allauth.account.models import EmailAddress
 from asgiref.sync import sync_to_async
 from channels.testing import WebsocketCommunicator
 
@@ -4218,7 +4219,7 @@ class FamilyMembersViewTests(TwoFamilyTestCase):
                 page, f'id="{field}-{member_membership.pk}" checked disabled', # noqa
             )
 
-    def test_demoting_a_non_sole_admin_preserves_their_stored_permission_flags(self): # noqa
+    def test_demoting_an_admin_resets_their_permission_flags_to_defaults(self): # noqa
         self.client.force_login(self.admin_a)
         second_admin = User.objects.create_user(
             username="second_admin_a", password="testpass123",
@@ -4227,18 +4228,29 @@ class FamilyMembersViewTests(TwoFamilyTestCase):
             family=self.family_a, user=second_admin,
             role=FamilyMembership.Role.ADMIN, display_name="Second Admin",
         )
-        # Model defaults: can_add_list/can_remove_list True, the other
-        # four False -- never customised while they were an admin.
+        # Deliberately NON-default stored flags -- anything an admin's
+        # flags happen to hold is irrelevant while they're an admin
+        # (see has_family_permission), so this proves the demotion
+        # RESETS to the standard ordinary-member defaults rather than
+        # merely preserving whatever was stored before.
+        second_admin_membership.can_add_list = False
+        second_admin_membership.can_remove_list = False
+        second_admin_membership.can_add_catalogue = True
+        second_admin_membership.can_remove_catalogue = True
+        second_admin_membership.can_add_shops = True
+        second_admin_membership.can_remove_shops = True
+        second_admin_membership.save()
 
-        # Mirrors exactly what the disabled-but-hidden-preserved
-        # checkboxes in the admin-row template actually submit: the
-        # membership's CURRENT stored values, not a fresh user choice.
+        # Mirrors what the admin-row template actually submits for the
+        # disabled-but-hidden-mirrored checkboxes: the same (non-default)
+        # stored values set above. The model must override these on an
+        # actual demotion, not merely pass them through.
         response = self.client.post(self.url_a("family_members"), {
             "membership_id": second_admin_membership.pk, "action": "update",
             "role": FamilyMembership.Role.MEMBER,
-            "can_add_list": "on", "can_remove_list": "on",
-            "can_add_catalogue": "", "can_remove_catalogue": "",
-            "can_add_shops": "", "can_remove_shops": "",
+            "can_add_list": "", "can_remove_list": "",
+            "can_add_catalogue": "on", "can_remove_catalogue": "on",
+            "can_add_shops": "on", "can_remove_shops": "on",
         })
 
         self.assertRedirects(response, self.url_a("family_members"))
@@ -4246,13 +4258,97 @@ class FamilyMembersViewTests(TwoFamilyTestCase):
         self.assertEqual(
             second_admin_membership.role, FamilyMembership.Role.MEMBER,
         )
-        # The demotion must not have silently wiped their permissions.
+        # Reset to the standard ordinary-member defaults -- NOT the
+        # stale admin-era values submitted above.
         self.assertTrue(second_admin_membership.can_add_list)
         self.assertTrue(second_admin_membership.can_remove_list)
         self.assertFalse(second_admin_membership.can_add_catalogue)
         self.assertFalse(second_admin_membership.can_remove_catalogue)
         self.assertFalse(second_admin_membership.can_add_shops)
         self.assertFalse(second_admin_membership.can_remove_shops)
+
+    def test_promoting_a_member_without_a_verified_email_is_rejected(self): # noqa
+        self.client.force_login(self.admin_a)
+        # member_a (from TwoFamilyFixtureMixin) has no email at all.
+        response = self.client.post(self.url_a("family_members"), {
+            "membership_id": FamilyMembership.objects.get(
+                family=self.family_a, user=self.member_a,
+            ).pk,
+            "action": "update",
+            "role": FamilyMembership.Role.ADMIN,
+            "can_add_list": "on", "can_remove_list": "on",
+        })
+
+        self.assertRedirects(response, self.url_a("family_members"))
+        membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.member_a,
+        )
+        self.assertEqual(membership.role, FamilyMembership.Role.MEMBER)
+
+    def test_promoting_a_member_with_a_verified_email_succeeds(self): # noqa
+        self.client.force_login(self.admin_a)
+        EmailAddress.objects.create(
+            user=self.member_a, email="member_a@example.com",
+            verified=True, primary=True,
+        )
+
+        response = self.client.post(self.url_a("family_members"), {
+            "membership_id": FamilyMembership.objects.get(
+                family=self.family_a, user=self.member_a,
+            ).pk,
+            "action": "update",
+            "role": FamilyMembership.Role.ADMIN,
+            "can_add_list": "on", "can_remove_list": "on",
+        })
+
+        self.assertRedirects(response, self.url_a("family_members"))
+        membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.member_a,
+        )
+        self.assertEqual(membership.role, FamilyMembership.Role.ADMIN)
+
+    def test_role_dropdown_disables_admin_option_without_a_verified_email(self): # noqa
+        self.client.force_login(self.admin_a)
+        member_membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.member_a,
+        )
+
+        page = self.client.get(self.url_a("family_members"))
+
+        self.assertContains(
+            page,
+            f'value="admin"  disabled>Family admin',
+        )
+        self.assertContains(
+            page, f'id="id_role_{member_membership.pk}"',
+        )
+
+    def test_role_dropdown_enables_admin_option_with_a_verified_email(self): # noqa
+        EmailAddress.objects.create(
+            user=self.member_a, email="member_a2@example.com",
+            verified=True, primary=True,
+        )
+        self.client.force_login(self.admin_a)
+
+        page = self.client.get(self.url_a("family_members"))
+
+        self.assertNotContains(page, 'value="admin"  disabled>Family admin') # noqa
+
+    def test_sole_admins_role_control_is_disabled_in_the_template(self): # noqa
+        self.client.force_login(self.admin_a)
+        admin_membership = FamilyMembership.objects.get(
+            family=self.family_a, user=self.admin_a,
+        )
+
+        page = self.client.get(self.url_a("family_members"))
+
+        self.assertContains(
+            page, f'id="id_role_{admin_membership.pk}" class="form-select" disabled', # noqa
+        )
+        self.assertContains(
+            page,
+            f'<input type="hidden" name="role" value="{admin_membership.role}">', # noqa
+        )
 
 
 class FamilyMembershipAdminLastAdminProtectionTests(TwoFamilyTestCase):

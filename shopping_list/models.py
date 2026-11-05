@@ -5,6 +5,7 @@ from django.db.models.functions import Lower
 from django.utils.text import slugify
 from django.core.exceptions import ValidationError
 from utilities.utils import generate_unique_slug
+from allauth.account.models import EmailAddress
 import uuid
 
 
@@ -116,6 +117,33 @@ class FamilyMembership(models.Model):
             family_id=self.family_id, role=self.Role.ADMIN,
         ).exclude(pk=self.pk).exists()
 
+    def _has_verified_email(self):
+        """True if this membership's user has at least one verified
+        allauth EmailAddress -- the architecture's authoritative signal
+        for "this account has a real, confirmed email," independent of
+        the plain User.email field (which can be stale or unverified;
+        see shopping_list.tests_identity_architecture)."""
+        if not self.user_id:
+            return False
+        return EmailAddress.objects.filter(
+            user_id=self.user_id, verified=True,
+        ).exists()
+
+    def _previous_role(self):
+        """The role this membership had in the database before this
+        in-memory change, or None for a not-yet-saved (brand new) row.
+        Several checks below need to distinguish an actual role
+        TRANSITION from a row simply being re-saved unchanged, or being
+        created for the first time (e.g. a family's founding admin, who
+        must not be blocked by the "promotion requires a verified
+        email" rule below -- there is no PREVIOUS role to transition
+        from)."""
+        if not self.pk:
+            return None
+        return FamilyMembership.objects.filter(
+            pk=self.pk,
+        ).values_list("role", flat=True).first()
+
     def clean(self):
         super().clean()
 
@@ -142,38 +170,81 @@ class FamilyMembership(models.Model):
                     ),
                 })
 
-        if self.pk and self.role != self.Role.ADMIN:
-            previous_role = FamilyMembership.objects.filter(
-                pk=self.pk,
-            ).values_list("role", flat=True).first()
-            if previous_role == self.Role.ADMIN and self._would_remove_last_admin(): # noqa
-                raise ValidationError({
-                    "role": (
-                        "A family must always have at least one "
-                        "administrator. Promote another member before "
-                        "removing this one's administrator role."
-                    ),
-                })
+        previous_role = self._previous_role()
 
-    def save(self, *args, **kwargs):
-        # Belt-and-braces alongside clean(): this also catches role
-        # changes made without going through full_clean() (e.g. a raw
-        # ORM/admin save), so the invariant cannot be bypassed merely by
-        # skipping validation.
-        if self.pk:
-            previous_role = FamilyMembership.objects.filter(
-                pk=self.pk,
-            ).values_list("role", flat=True).first()
-            if (
-                previous_role == self.Role.ADMIN
-                and self.role != self.Role.ADMIN
-                and self._would_remove_last_admin()
-            ):
-                raise ValidationError(
+        if (
+            previous_role is not None
+            and previous_role != self.Role.ADMIN
+            and self.role == self.Role.ADMIN
+            and not self._has_verified_email()
+        ):
+            raise ValidationError({
+                "role": (
+                    "Family administrators must have a registered, "
+                    "verified email address. Add and verify an email "
+                    "for this account before making them an "
+                    "administrator."
+                ),
+            })
+
+        if (
+            previous_role == self.Role.ADMIN
+            and self.role != self.Role.ADMIN
+            and self._would_remove_last_admin()
+        ):
+            raise ValidationError({
+                "role": (
                     "A family must always have at least one "
                     "administrator. Promote another member before "
                     "removing this one's administrator role."
-                )
+                ),
+            })
+
+    def save(self, *args, **kwargs):
+        previous_role = self._previous_role()
+
+        # Belt-and-braces alongside clean(): these also catch role
+        # changes made without going through full_clean() (e.g. a raw
+        # ORM/admin save), so neither invariant can be bypassed merely
+        # by skipping validation.
+        if (
+            previous_role is not None
+            and previous_role != self.Role.ADMIN
+            and self.role == self.Role.ADMIN
+            and not self._has_verified_email()
+        ):
+            raise ValidationError(
+                "Family administrators must have a registered, "
+                "verified email address. Add and verify an email for "
+                "this account before making them an administrator."
+            )
+
+        if (
+            previous_role == self.Role.ADMIN
+            and self.role != self.Role.ADMIN
+            and self._would_remove_last_admin()
+        ):
+            raise ValidationError(
+                "A family must always have at least one "
+                "administrator. Promote another member before "
+                "removing this one's administrator role."
+            )
+
+        # An admin's six permission flags are irrelevant while they
+        # hold that role (admins always pass -- see
+        # utilities.utils.has_family_permission), so whatever is
+        # currently stored for them may be stale, arbitrary, or never
+        # configured at all. On an actual demotion, reset to the same
+        # sensible defaults a brand-new ordinary member gets, rather
+        # than carrying forward a meaningless or stale value.
+        if previous_role == self.Role.ADMIN and self.role != self.Role.ADMIN:
+            self.can_add_list = True
+            self.can_remove_list = True
+            self.can_add_catalogue = False
+            self.can_remove_catalogue = False
+            self.can_add_shops = False
+            self.can_remove_shops = False
+
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):

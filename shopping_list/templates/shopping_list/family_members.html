@@ -31,14 +31,34 @@
         {% endif %}
       </h2>
 
-      <form method="post" action="{% url 'family_members' family_slug=request.family.slug %}" class="row g-2 align-items-center">
+      <form method="post" action="{% url 'family_members' family_slug=request.family.slug %}" class="row g-2 align-items-center" onsubmit="return confirmRoleChange(this, '{{ row.membership.role }}', '{{ row.membership.display_name|escapejs }}');"> {# noqa #}
         {% csrf_token %}
         <input type="hidden" name="membership_id" value="{{ row.membership.pk }}">
         <input type="hidden" name="action" value="update">
 
         <div class="col-auto">
           <label class="form-label" for="id_role_{{ row.membership.pk }}">Role</label>
-          {{ row.form.role }}
+          {# Hand-rendered (not {{ row.form.role }}), matching the six #}
+          {# checkboxes below, so "Family admin" can be disabled when #}
+          {# there's no verified email, and the whole control disabled #}
+          {# for the sole remaining admin. Values must stay in sync #}
+          {# with FamilyMembership.Role. #}
+          <select name="role" id="id_role_{{ row.membership.pk }}" class="form-select" {% if row.is_sole_admin %}disabled{% endif %}> {# noqa #}
+            <option value="admin" {% if row.membership.role == "admin" %}selected{% endif %} {% if not row.has_verified_email %}disabled{% endif %}>Family admin</option> {# noqa #}
+            <option value="member" {% if row.membership.role == "member" %}selected{% endif %}>Family member</option> {# noqa #}
+          </select>
+          {% if row.is_sole_admin %}
+          <input type="hidden" name="role" value="{{ row.membership.role }}">
+          <p class="text-muted small mb-0 mt-1">
+            This family's only administrator -- promote another member
+            first to change this.
+          </p>
+          {% elif not row.has_verified_email %}
+          <p class="text-muted small mb-0 mt-1">
+            This member has no verified email address, so they cannot
+            be made an administrator.
+          </p>
+          {% endif %}
         </div>
 
         {% if row.membership.is_family_admin %}
@@ -103,4 +123,31 @@
   </div>
   {% endfor %}
 </div>
+{% endblock %}
+
+{% block extra_js %}
+{{ block.super }}
+<script>
+// Only prompts when the role SELECT's value actually differs from the
+// row's original role -- saving unrelated permission-checkbox edits
+// doesn't trigger a role-change confirmation. Returning false aborts
+// the submission entirely (nothing is sent to the server), matching
+// the existing "Remove from family" confirm() pattern.
+function confirmRoleChange(form, originalRole, displayName) {
+    const roleField = form.querySelector('select[name="role"]');
+    if (!roleField || roleField.disabled) {
+        // No editable role control on this row (e.g. the family's sole
+        // administrator) -- nothing role-related to confirm.
+        return true;
+    }
+    if (roleField.value === originalRole) {
+        return true;
+    }
+    const message = roleField.value === 'admin'
+        ? `Make ${displayName} a family administrator?`
+        : `Remove ${displayName}'s administrator status and make them `
+          + `an ordinary family member?`;
+    return confirm(message);
+}
+</script>
 {% endblock %}

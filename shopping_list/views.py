@@ -28,6 +28,7 @@ from django.utils.decorators import method_decorator
 from django.views import View
 from django.contrib import messages
 from django.core.exceptions import PermissionDenied, ValidationError
+from allauth.account.models import EmailAddress
 
 logger = logging.getLogger(__name__)
 
@@ -1872,6 +1873,11 @@ class FamilyMembersView(FamilyMembershipRequiredMixin, View):
             family=request.family,
         ).select_related('user').order_by('date_joined', 'pk'))
         admin_count = sum(1 for m in memberships if m.is_family_admin)
+        # One query for all rows, rather than one EmailAddress lookup
+        # per membership, to avoid N+1.
+        verified_user_ids = set(EmailAddress.objects.filter(
+            user_id__in=[m.user_id for m in memberships], verified=True,
+        ).values_list('user_id', flat=True))
         rows = [
             {
                 'membership': membership,
@@ -1882,6 +1888,7 @@ class FamilyMembersView(FamilyMembershipRequiredMixin, View):
                 'is_sole_admin': (
                     membership.is_family_admin and admin_count == 1
                 ),
+                'has_verified_email': membership.user_id in verified_user_ids, # noqa
             }
             for membership in memberships
         ]
