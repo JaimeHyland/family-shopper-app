@@ -31,8 +31,10 @@ from .models import (
 )
 
 
-def create_family_with_members(name, admin_username, member_usernames=()):
-    family = Family.objects.create(name=name)
+def create_family_with_members(
+    name, admin_username, member_usernames=(), is_solo=False,
+):
+    family = Family.objects.create(name=name, is_solo=is_solo)
     admin = User.objects.create_user(username=admin_username, password="pass1234")
     FamilyMembership.objects.create(
         family=family, user=admin, role=FamilyMembership.Role.ADMIN,

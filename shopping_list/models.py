@@ -25,6 +25,14 @@ class Family(models.Model):
         editable=False,
     )
     date_created = models.DateTimeField(auto_now_add=True)
+    # Whether this Family was founded through solo registration (an
+    # individual using the app alone) rather than family-admin
+    # registration. Persisted explicitly because it cannot be inferred
+    # reliably later on: a freshly-registered family admin also starts
+    # out with exactly one membership, identical in that respect to a
+    # solo user, until other members are invited. Used e.g. to choose
+    # the right default seed-list dataset (see shopping_list.seed_lists).
+    is_solo = models.BooleanField(default=False)
 
     def save(self, *args, **kwargs):
         if not self.slug:
