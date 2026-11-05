@@ -306,9 +306,15 @@ class LoggedInIdentityDisplayTests(TestCase):
         self.assertNotContains(response, self.member.user.username)
         self.assertContains(response, "You are logged in as")
 
-    def test_admin_with_a_real_username_is_shown_as_before(self):
-        # "Option A": accounts with a real, self-chosen username (e.g.
-        # this family's admin) are unaffected by this change.
+    def test_admin_also_sees_display_name_and_family_name(self):
+        # "Option A" accounts (a real, self-chosen Django username) are
+        # no longer a special case: the header always shows the
+        # family-local display name, not the technical username, even
+        # when they differ -- as set here deliberately, to prove this
+        # isn't simply reusing the username by coincidence.
+        FamilyMembership.objects.filter(
+            family=self.family, user=self.admin,
+        ).update(display_name="Identity Administrator")
         self.client.force_login(self.admin)
 
         response = self.client.get(
@@ -318,5 +324,8 @@ class LoggedInIdentityDisplayTests(TestCase):
         )
 
         self.assertContains(
-            response, f"You are logged in as {self.admin.username}",
+            response,
+            "You are logged in as Identity Administrator "
+            "(Identity Family)",
         )
+        self.assertNotContains(response, f"as {self.admin.username}")

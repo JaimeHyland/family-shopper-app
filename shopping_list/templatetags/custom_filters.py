@@ -1,5 +1,4 @@
 from django import template
-from shopping_list.invitations import INTERNAL_USERNAME_PREFIX
 from shopping_list.models import FamilyMembership
 
 
@@ -26,19 +25,18 @@ def member_display_name(user, family):
 def logged_in_identity(user, request=None):
     """
     What to show for "You are logged in as ..." (and anywhere else the
-    CURRENTLY logged-in user's own identity is surfaced). A no-email
-    member's Django username is an opaque, internal identifier (see
-    shopping_list.invitations.invite_member_without_email /
-    INTERNAL_USERNAME_PREFIX) and must never be shown -- this always
-    resolves to their family-local display name instead, with the
-    family name alongside it whenever one can be determined. Accounts
-    with a real, self-chosen username (e.g. admins, or members invited
-    by email) are shown as before -- unaffected.
+    CURRENTLY logged-in user's own identity is surfaced): always
+    "<display_name> (<family name>)", resolved fresh from this user's
+    FamilyMembership and the corresponding Family record -- never a
+    separately stored/cached combined string. This applies uniformly to
+    EVERY account, including "Option A" (email-based) accounts with a
+    real, self-chosen Django username: that technical username remains
+    the authentication identifier, but is never the human-facing
+    identity shown to the person themselves, exactly as for any other
+    member.
     """
     if user is None or not getattr(user, "is_authenticated", False):
         return None
-    if not user.username.startswith(INTERNAL_USERNAME_PREFIX):
-        return str(user)
 
     family = getattr(request, "family", None) if request else None
     membership = None
@@ -53,7 +51,6 @@ def logged_in_identity(user, request=None):
 
     if membership is not None:
         return f"{membership.display_name} ({membership.family.name})"
-    # No membership at all is not expected to happen in practice for an
-    # internal-username account, but this must still never fall back to
-    # the raw username.
+    # No membership at all (e.g. a Django-only superuser, or an
+    # orphaned account) -- never fall back to the raw username.
     return "your account"
