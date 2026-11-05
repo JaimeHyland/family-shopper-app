@@ -11,9 +11,9 @@ family, with no other family memberships anywhere; anything broader
 refused rather than guessed at.
 
 Usage (PowerShell):
-    python manage.py reset_test_registration --email test@example.com
-    python manage.py reset_test_registration --email test@example.com --apply
-    python manage.py reset_test_registration --email test@example.com --apply --yes
+    python manage.py dev_reset_one_registration --email test@example.com
+    python manage.py dev_reset_one_registration --email test@example.com --apply
+    python manage.py dev_reset_one_registration --email test@example.com --apply --yes
 """
 import os
 
