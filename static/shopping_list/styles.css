@@ -23,6 +23,48 @@ span.in-basket-text a {
     text-decoration-thickness: 3px !important;
 }
 
+/* Row states (set from item.state; mutually exclusive, so they cannot
+   accumulate). Precedence: bought > cancelled > in basket > ordinary. */
+.item-state-ordinary .item-text,
+.item-state-in_basket .item-text {
+    font-weight: bold;
+}
+
+.item-state-cancelled .item-text {
+    font-weight: normal;
+    color: #6c757d;
+}
+
+.item-state-cancelled .product-name-style {
+    text-decoration: line-through;
+    color: #6c757d;
+}
+
+.item-state-bought {
+    color: #6c757d;
+}
+
+.item-attribution {
+    display: block;
+    font-weight: normal;
+    font-size: 0.8em;
+    color: #495057;
+}
+
+.item-state-bought .item-attribution {
+    display: inline;
+}
+
+/* One soft background per family member (dark text stays readable). */
+.list-group-item.member-color-0 { background-color: #d6e9f8; }
+.list-group-item.member-color-1 { background-color: #fbe3c8; }
+.list-group-item.member-color-2 { background-color: #d9f0d4; }
+.list-group-item.member-color-3 { background-color: #f1d9f0; }
+.list-group-item.member-color-4 { background-color: #fff3bf; }
+.list-group-item.member-color-5 { background-color: #d3f0ee; }
+.list-group-item.member-color-6 { background-color: #f9d6d6; }
+.list-group-item.member-color-7 { background-color: #e4e0f5; }
+
 /* Cancelled-items visibility toggle: purely a display concern, toggled
    client-side; never affects which ListItems are actually cancelled.
    !important is required to win over Bootstrap's .d-flex utility class
@@ -63,6 +105,24 @@ a.custom-link.text-muted {
     text-decoration: none !important;
 }
 
+/* Product catalogue: the whole row (minus the info icon) is a button
+   that adds the product to the shopping list. Kept visually subtle
+   (plain row look) with a gentle hover/focus highlight as the only
+   affordance that it's clickable. */
+.product-add-btn:hover,
+.product-add-btn:focus-visible {
+    background-color: #eef4ef;
+}
+
+.product-info-link {
+    color: #6c757d;
+}
+
+.product-info-link:hover,
+.product-info-link:focus-visible {
+    color: #004225;
+}
+
 .toast-position {
     position: absolute;
     top: 20px;
@@ -91,4 +151,31 @@ a.custom-link.text-muted {
     #product-name {
         margin-left: 140px !important;
     }
+}
+
+/* Keep unit controls usable on touch screens without crowding names. */
+.basket-controls .btn {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0.25rem 0.5rem;
+}
+
+.basket-controls {
+    align-items: center;
+}
+
+.basket-controls .basket-down {
+    min-width: 52px;
+    min-height: 52px;
+    font-size: 1.5rem;
+}
+
+#shopping_list .item-text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+/* Let the focusable wrapper receive hover events for native disabled controls. */
+.unit-control > button:disabled {
+    pointer-events: none;
 }

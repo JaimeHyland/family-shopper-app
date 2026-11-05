@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container py-3">
+  {% if messages %}
+  {% for message in messages %}
+  <div class="alert alert-{{ message.tags }}" role="status">{{ message }}</div>
+  {% endfor %}
+  {% endif %}
+
+  <h1 class="h3">Family members</h1>
+  <p class="text-muted">
+    Administrators always have full access. A family must always keep at
+    least one administrator.
+  </p>
+
+  <p>
+    <a href="{% url 'invite_member' family_slug=request.family.slug %}" class="btn btn-sm btn-outline-primary">Invite a member</a> {# noqa #}
+  </p>
+
+  {% for row in rows %}
+  <div class="card mb-3">
+    <div class="card-body">
+      <h2 class="h5 card-title">
+        {{ row.membership.display_name }}
+        {% if row.membership.is_family_admin %}
+        <span class="badge bg-primary">Administrator</span>
+        {% endif %}
+        {% if row.is_sole_admin %}
+        <span class="badge bg-secondary">Only administrator</span>
+        {% endif %}
+      </h2>
+
+      <form method="post" action="{% url 'family_members' family_slug=request.family.slug %}" class="row g-2 align-items-center" onsubmit="return confirmRoleChange(this, '{{ row.membership.role }}', '{{ row.membership.display_name|escapejs }}');"> {# noqa #}
+        {% csrf_token %}
+        <input type="hidden" name="membership_id" value="{{ row.membership.pk }}">
+        <input type="hidden" name="action" value="update">
+
+        <div class="col-auto">
+          <label class="form-label" for="id_role_{{ row.membership.pk }}">Role</label>
+          {# Hand-rendered (not {{ row.form.role }}), matching the six #}
+          {# checkboxes below, so "Family admin" can be disabled when #}
+          {# there's no verified email, and the whole control disabled #}
+          {# for the sole remaining admin. Values must stay in sync #}
+          {# with FamilyMembership.Role. #}
+          <select name="role" id="id_role_{{ row.membership.pk }}" class="form-select" {% if row.is_sole_admin %}disabled{% endif %}> {# noqa #}
+            <option value="admin" {% if row.membership.role == "admin" %}selected{% endif %} {% if not row.has_verified_email %}disabled{% endif %}>Family admin</option> {# noqa #}
+            <option value="member" {% if row.membership.role == "member" %}selected{% endif %}>Family member</option> {# noqa #}
+          </select>
+          {% if row.is_sole_admin %}
+          <input type="hidden" name="role" value="{{ row.membership.role }}">
+          <p class="text-muted small mb-0 mt-1">
+            This family's only administrator -- promote another member
+            first to change this.
+          </p>
+          {% elif not row.has_verified_email %}
+          <p class="text-muted small mb-0 mt-1">
+            This member has no verified email address, so they cannot
+            be made an administrator.
+          </p>
+          {% endif %}
+        </div>
+
+        {% if row.membership.is_family_admin %}
+        <div class="col-12">
+          <p class="text-muted small mb-1">
+            Administrators always have full access; these are shown
+            checked and disabled for reference only -- editing them here
+            has no effect while this member remains an administrator.
+          </p>
+        </div>
+        {% endif %}
+
+        <div class="col-12">
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" name="can_add_list" id="can_add_list-{{ row.membership.pk }}" {% if row.membership.is_family_admin or row.membership.can_add_list %}checked{% endif %} {% if row.membership.is_family_admin %}disabled{% endif %}>
+            {% if row.membership.is_family_admin %}<input type="hidden" name="can_add_list" value="{% if row.membership.can_add_list %}on{% endif %}">{% endif %}
+            <label class="form-check-label" for="can_add_list-{{ row.membership.pk }}">Add items to the shopping list</label>
+          </div>
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" name="can_remove_list" id="can_remove_list-{{ row.membership.pk }}" {% if row.membership.is_family_admin or row.membership.can_remove_list %}checked{% endif %} {% if row.membership.is_family_admin %}disabled{% endif %}>
+            {% if row.membership.is_family_admin %}<input type="hidden" name="can_remove_list" value="{% if row.membership.can_remove_list %}on{% endif %}">{% endif %}
+            <label class="form-check-label" for="can_remove_list-{{ row.membership.pk }}">Remove items from the shopping list</label>
+          </div>
+        </div>
+        <div class="col-12">
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" name="can_add_catalogue" id="can_add_catalogue-{{ row.membership.pk }}" {% if row.membership.is_family_admin or row.membership.can_add_catalogue %}checked{% endif %} {% if row.membership.is_family_admin %}disabled{% endif %}>
+            {% if row.membership.is_family_admin %}<input type="hidden" name="can_add_catalogue" value="{% if row.membership.can_add_catalogue %}on{% endif %}">{% endif %}
+            <label class="form-check-label" for="can_add_catalogue-{{ row.membership.pk }}">Add products to the catalogue</label>
+          </div>
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" name="can_remove_catalogue" id="can_remove_catalogue-{{ row.membership.pk }}" {% if row.membership.is_family_admin or row.membership.can_remove_catalogue %}checked{% endif %} {% if row.membership.is_family_admin %}disabled{% endif %}>
+            {% if row.membership.is_family_admin %}<input type="hidden" name="can_remove_catalogue" value="{% if row.membership.can_remove_catalogue %}on{% endif %}">{% endif %}
+            <label class="form-check-label" for="can_remove_catalogue-{{ row.membership.pk }}">Remove products from the catalogue</label>
+          </div>
+        </div>
+        <div class="col-12">
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" name="can_add_shops" id="can_add_shops-{{ row.membership.pk }}" {% if row.membership.is_family_admin or row.membership.can_add_shops %}checked{% endif %} {% if row.membership.is_family_admin %}disabled{% endif %}>
+            {% if row.membership.is_family_admin %}<input type="hidden" name="can_add_shops" value="{% if row.membership.can_add_shops %}on{% endif %}">{% endif %}
+            <label class="form-check-label" for="can_add_shops-{{ row.membership.pk }}">Add shops</label>
+          </div>
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" name="can_remove_shops" id="can_remove_shops-{{ row.membership.pk }}" {% if row.membership.is_family_admin or row.membership.can_remove_shops %}checked{% endif %} {% if row.membership.is_family_admin %}disabled{% endif %}>
+            {% if row.membership.is_family_admin %}<input type="hidden" name="can_remove_shops" value="{% if row.membership.can_remove_shops %}on{% endif %}">{% endif %}
+            <label class="form-check-label" for="can_remove_shops-{{ row.membership.pk }}">Remove shops</label>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <button type="submit" class="btn btn-sm btn-primary">Save</button>
+        </div>
+      </form>
+
+      <form method="post" action="{% url 'family_members' family_slug=request.family.slug %}" class="mt-2" onsubmit="return confirm('Remove {{ row.membership.display_name }} from this family?');">
+        {% csrf_token %}
+        <input type="hidden" name="membership_id" value="{{ row.membership.pk }}">
+        <input type="hidden" name="action" value="remove">
+        <button type="submit" class="btn btn-sm btn-outline-danger">Remove from family</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{{ block.super }}
+<script>
+// Only prompts when the role SELECT's value actually differs from the
+// row's original role -- saving unrelated permission-checkbox edits
+// doesn't trigger a role-change confirmation. Returning false aborts
+// the submission entirely (nothing is sent to the server), matching
+// the existing "Remove from family" confirm() pattern.
+function confirmRoleChange(form, originalRole, displayName) {
+    const roleField = form.querySelector('select[name="role"]');
+    if (!roleField || roleField.disabled) {
+        // No editable role control on this row (e.g. the family's sole
+        // administrator) -- nothing role-related to confirm.
+        return true;
+    }
+    if (roleField.value === originalRole) {
+        return true;
+    }
+    const message = roleField.value === 'admin'
+        ? `Make ${displayName} a family administrator?`
+        : `Remove ${displayName}'s administrator status and make them `
+          + `an ordinary family member?`;
+    return confirm(message);
+}
+</script>
+{% endblock %}

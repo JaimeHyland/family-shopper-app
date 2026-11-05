@@ -2,6 +2,7 @@
 
 {% block content %}
 <div class="container">
+    {% if memberships %}
     <h1>Choose a family</h1>
     <p>You belong to more than one family. Choose which one to open.</p>
     <ul class="list-group">
@@ -15,5 +16,14 @@
         {% endfor %}
     </ul>
     <button type="button" class="btn btn-secondary mt-3" onclick="history.back()">Cancel</button>
+    {% else %}
+    <h1>No family membership</h1>
+    <p>
+        Your account does not currently belong to any family. If you
+        believe this is a mistake, please contact whoever manages your
+        family.
+    </p>
+    <a href="{% url 'account_logout' %}" class="btn btn-secondary mt-3">Log out</a>
+    {% endif %}
 </div>
 {% endblock %}

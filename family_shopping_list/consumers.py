@@ -53,17 +53,55 @@ class ShoppingConsumer(AsyncWebsocketConsumer):
             'cancelled': event['cancelled'],
             'bought': event['bought'],
             'product_name': event['product_name'],
+            'quantity_required': event['quantity_required'],
             'quantity_bought': event['quantity_bought'],
             'buyer_display_name': event['buyer_display_name'],
-            'user': event['user']
+            'state': event['state'],
+            'owner_id': event['owner_id'],
+            'owner_display_name': event['owner_display_name'],
+            'cancelled_by_display_name': event['cancelled_by_display_name'],
+            'restored_by_display_name': event['restored_by_display_name'],
+            'row_html': event['row_html'],
+            'user': event['user'],
+        }))
+
+    async def list_item_added(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'list_item_added',
+            'list_item_id': event['list_item_id'],
+            'list_item_slug': event['list_item_slug'],
+            'product_name': event['product_name'],
+            'quantity_required': event['quantity_required'],
+            'user': event['user'],
+        }))
+
+    async def product_list_status(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'product_list_status',
+            'product_id': event['product_id'],
+            'on_list_quantity': event['on_list_quantity'],
+            'user': event['user'],
         }))
 
     async def basket_bought(self, event):
         await self.send(text_data=json.dumps({
             'type': 'basket_bought',
-            'buyer_username': event['buyer_username'],
+            'buyer_user_id': event['buyer_user_id'],
             'buyer_display_name': event['buyer_display_name'],
             'item_count': event['item_count'],
+        }))
+
+    async def shopping_list_complete(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'shopping_list_complete',
+            'shopping_list_id': event['shopping_list_id'],
+        }))
+
+    async def shopping_list_replaced(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'shopping_list_replaced',
+            'closed_list_id': event['closed_list_id'],
+            'new_list_id': event['new_list_id'],
         }))
 
     @database_sync_to_async

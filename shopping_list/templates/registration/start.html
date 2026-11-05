@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% load static %}
+
+{% block extra_css %}
+    <link rel="stylesheet" href="{% static 'account.css' %}">
+{% endblock %}
+
+{% block content %}
+
+<div class="container">
+    <h1>Get started</h1>
+    <p>How will you be using the Family Shopping List?</p>
+    <a href="{% url 'solo_registration_request' %}" class="btn btn-primary">I'll be using the app alone</a>
+    <a href="{% url 'family_registration_request' %}" class="btn btn-secondary">I'll be using the app with my family</a>
+</div>
+{% endblock %}

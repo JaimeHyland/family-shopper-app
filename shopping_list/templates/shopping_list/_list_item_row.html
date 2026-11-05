@@ -1,16 +1,37 @@
-<li class="list-group-item d-flex align-items-center{% if item.cancelled %} cancelled-list-item{% endif %}">
-    <input type="checkbox" class="cancel-chkbx" name="cancelled_item" value="{{ item.id }}"
-      {% if item.cancelled %} checked {% endif %}
-      {% if item.in_basket %} disabled {% endif %}
-      onchange="toggleCancelUncancel(this, '{{ item.id }}')">
-     <span class="{% if item.cancelled %}text-muted{% elif item.in_basket %}in-basket-text{% else %}bold-text{% endif %}">
+{% load i18n_json %}
+{# State-driven row: item.state (ordinary/in_basket/cancelled) is set by annotate_item_state() and is the single source of styling. #}
+<li class="list-group-item d-flex align-items-center item-state-{{ item.state }}{% if item.state == 'in_basket' %} member-color-{{ item.owner_color }}{% endif %}{% if item.cancelled %} cancelled-list-item{% endif %}"
+    data-item-id="{{ item.id }}" data-product-id="{{ item.product_id }}" data-unit-ids="{% if item.unit_ids %}{{ item.unit_ids|join:' ' }}{% else %}{{ item.id }}{% endif %}" data-state="{{ item.state }}" data-owner-id="{{ item.put_in_basket_by_id|default_if_none:'' }}">
+     <span class="item-text flex-grow-1">
         <a id="product-name" class="custom-link product-name-style"
-          href="{% url 'list_item' family_slug=request.family.slug slug=item.slug %}">
+          href="{% url 'list_item' family_slug=item.family.slug slug=item.slug %}">
             {{ item.product.product_name }}
         </a>
+        <span class="item-quantity text-muted">(&times;{{ item.unit_count|default:1 }})</span>
+        {% if item.state == 'in_basket' and item.owner_name %}
+        <small class="item-attribution" data-attr-key="shopping_list.attr.in_basket" data-name="{{ item.owner_name }}">&#128722; {% t "shopping_list.attr.in_basket" name=item.owner_name %}</small>
+        {% elif item.state == 'cancelled' and item.cancelled_by_name %}
+        <small class="item-attribution" data-attr-key="shopping_list.attr.cancelled" data-name="{{ item.cancelled_by_name }}">{% t "shopping_list.attr.cancelled" name=item.cancelled_by_name %}</small>
+        {% elif item.state == 'ordinary' and item.restored_by_name %}
+        <small class="item-attribution" data-attr-key="shopping_list.attr.restored" data-name="{{ item.restored_by_name }}">{% t "shopping_list.attr.restored" name=item.restored_by_name %}</small>
+        {% endif %}
       </span>
-    <input type="checkbox" class="completed-chkbx ms-auto" name="completed_items" value="{{ item.id }}"
-      {% if item.in_basket %} checked {% endif %}
-      {% if item.cancelled or item.in_basket and item.put_in_basket_by_id != request.user.id %} disabled {% endif %}
-      onchange="updateDatabase(this, '{{ item.id }}')">
+    <div class="basket-controls d-flex gap-1 ms-auto flex-shrink-0">
+      <span class="unit-control" title="{% t 'shopping_list.add_unit' %}" {% if item.state != 'ordinary' and item.state != 'in_basket' %}tabindex="0" role="button" aria-disabled="true" aria-label="{{ item.product.product_name }}: {% t 'shopping_list.add_unit' %}"{% endif %}>
+        <button type="button" class="btn btn-outline-primary basket-plus" data-basket-action="add_unit" data-item-id="{{ item.id }}"
+          {% if item.state != 'ordinary' and item.state != 'in_basket' %}disabled aria-disabled="true"{% endif %} title="{% t 'shopping_list.add_unit' %}" aria-label="{{ item.product.product_name }}: {% t 'shopping_list.add_unit' %}">+</button>
+      </span>
+      <span class="unit-control" title="{% t 'shopping_list.remove_unit' %}" {% if item.state != 'ordinary' %}tabindex="0" role="button" aria-disabled="true" aria-label="{{ item.product.product_name }}: {% t 'shopping_list.remove_unit' %}"{% endif %}>
+        <button type="button" class="btn btn-outline-secondary basket-minus" data-basket-action="remove_unit" data-item-id="{{ item.id }}"
+          {% if item.state != 'ordinary' %}disabled aria-disabled="true"{% endif %} title="{% t 'shopping_list.remove_unit' %}" aria-label="{{ item.product.product_name }}: {% t 'shopping_list.remove_unit' %}">&minus;</button>
+      </span>
+      <span class="unit-control" title="{% t 'shopping_list.put_unit_in_basket' %}" {% if item.state != 'ordinary' %}tabindex="0" role="button" aria-disabled="true" aria-label="{{ item.product.product_name }}: {% t 'shopping_list.put_unit_in_basket' %}"{% endif %}>
+        <button type="button" class="btn btn-outline-success basket-down" data-basket-action="add_to_basket" data-item-id="{{ item.id }}"
+          {% if item.state != 'ordinary' %}disabled aria-disabled="true"{% endif %} title="{% t 'shopping_list.put_unit_in_basket' %}" aria-label="{{ item.product.product_name }}: {% t 'shopping_list.put_unit_in_basket' %}">&#8595;</button>
+      </span>
+      <span class="unit-control" title="{% t 'shopping_list.return_unit' %}" {% if item.state != 'in_basket' or item.put_in_basket_by_id != request.user.id %}tabindex="0" role="button" aria-disabled="true" aria-label="{{ item.product.product_name }}: {% t 'shopping_list.return_unit' %}"{% endif %}>
+        <button type="button" class="btn btn-outline-secondary basket-return" data-basket-action="remove_from_basket" data-item-id="{{ item.id }}"
+          {% if item.state != 'in_basket' or item.put_in_basket_by_id != request.user.id %}disabled aria-disabled="true"{% endif %} title="{% t 'shopping_list.return_unit' %}" aria-label="{{ item.product.product_name }}: {% t 'shopping_list.return_unit' %}">&#8625;</button>
+      </span>
+    </div>
 </li>

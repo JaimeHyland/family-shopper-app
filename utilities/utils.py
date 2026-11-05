@@ -3,8 +3,31 @@ import secrets
 from django.utils.text import slugify
 
 
-def is_adult(user):
-    return user.groups.filter(name='adult').exists()
+def is_family_admin(request):
+    """True only if `request` carries a specific family membership (set
+    by FamilyMembershipRequiredMixin) and that membership is an admin of
+    THAT family. Deliberately never falls back to any global/cross-family
+    privilege check: a user who administers a different family, or a
+    request reached without the expected family-scoped context, is
+    treated as "not an admin" here rather than as an opportunity to fall
+    back to a broader check."""
+    membership = getattr(request, "family_membership", None)
+    return membership is not None and membership.is_family_admin
+
+
+def has_family_permission(request, flag_name):
+    """True if `request` carries a family membership and that membership
+    is authorised for the operation gated by `flag_name` (one of
+    FamilyMembership's six `can_*` boolean fields). Admins always pass,
+    regardless of the flags: an admin's authority never depends on these
+    ordinary-member permission checkboxes. Fails safe (False) if there is
+    no family membership on the request, exactly like is_family_admin."""
+    membership = getattr(request, "family_membership", None)
+    if membership is None:
+        return False
+    return membership.is_family_admin or bool(
+        getattr(membership, flag_name, False),
+    )
 
 
 _SLUG_SUFFIX_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789'

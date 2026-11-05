@@ -16,7 +16,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import include, path
-from shopping_list import registration_views
+from shopping_list import invitation_views, registration_views
 from django.contrib.auth import views as auth_views
 from django.conf import settings
 from django.conf.urls.static import static
@@ -36,6 +36,21 @@ class FaviconRedirectView(RedirectView):
 urlpatterns = [
     path('', registration_views.HomeView.as_view(), name='logged_out_homepage'), # noqa
     path(
+        'register/',
+        registration_views.RegistrationStartView.as_view(),
+        name='registration_start',
+    ),
+    path(
+        'register/family/',
+        registration_views.FamilyRegistrationRequestView.as_view(),
+        name='family_registration_request',
+    ),
+    path(
+        'register/solo/',
+        registration_views.SoloRegistrationRequestView.as_view(),
+        name='solo_registration_request',
+    ),
+    path(
         'families/choose/',
         registration_views.FamilyChooserView.as_view(),
         name='family_chooser',
@@ -49,6 +64,16 @@ urlpatterns = [
         'register/verify/<str:token>/',
         registration_views.RegistrationCompletionView.as_view(),
         name='registration_complete',
+    ),
+    path(
+        'invitations/accept/<str:token>/',
+        invitation_views.MemberInvitationCompletionView.as_view(),
+        name='member_invitation_accept',
+    ),
+    path(
+        'first-login/change-password/',
+        invitation_views.ForcePasswordChangeView.as_view(),
+        name='force_password_change',
     ),
     path(
         'welcome_page/',

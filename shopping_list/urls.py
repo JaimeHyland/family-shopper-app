@@ -1,11 +1,18 @@
-from . import views
+from . import family_login_views, invitation_views, views
+from .seed_views import SeedListView
 from django.urls import path
 
 
 urlpatterns = [
+    path('login/', family_login_views.FamilyLoginView.as_view(), name='family_login'), # noqa
     path('shopping-list/', views.ShoppingListView.as_view(), name='shopping_list'), # noqa
+    path('seed-lists/', SeedListView.as_view(), name='seed_lists'),
     path('list-item-<slug:slug>/', views.ListItemView.as_view(), name='list_item'),  # noqa
     path('add-to-shopping-list/', views.AddToShoppingListView.as_view(), name='add_to_shopping_list'),  # noqa
+    path('resolve-shopping-list-duplicate/', views.ResolveShoppingListDuplicateView.as_view(), name='resolve_shopping_list_duplicate'),  # noqa
+    path('dismiss-shopping-list-duplicate/', views.DismissShoppingListDuplicateView.as_view(), name='dismiss_shopping_list_duplicate'),  # noqa
+    path('close-shopping-list/', views.CloseShoppingListView.as_view(), name='close_shopping_list'),  # noqa
+    path('dismiss-shopping-list-completion/', views.DismissShoppingListCompletionView.as_view(), name='dismiss_shopping_list_completion'),  # noqa
     path('products/', views.ProductListView.as_view(), name='product_list'),
     path('products/<slug:slug>/', views.ProductView.as_view(), name='product_detail'), # noqa
     path('products/<slug:slug>/delete/', views.ProductDeleteView.as_view(), name='product_delete'), # noqa
@@ -18,4 +25,6 @@ urlpatterns = [
     path('categories/<slug:slug>/', views.CategoryView.as_view(), name='category_detail'), # noqa
     path('categories/<slug:slug>/delete/', views.CategoryDeleteView.as_view(), name='category_delete'), # noqa
     path('add-category/', views.AddCategoryView.as_view(), name='add_category'), # noqa
+    path('members/', views.FamilyMembersView.as_view(), name='family_members'), # noqa
+    path('members/invite/', invitation_views.InviteMemberView.as_view(), name='invite_member'), # noqa
 ]

@@ -1,15 +1,50 @@
 # Standing user preference: strict cost discipline
 
-> **MOST-MISSED RULE — CHECK THIS LAST, EVERY TIME:** Any message you are
-> about to send that is a report (investigation report, diagnostic report,
-> phase report, completion report, findings, root-cause analysis - any
-> structured summary written up for the user) MUST be copied to the
-> Windows clipboard via PowerShell `Set-Clipboard` in the SAME turn, before
-> you stop and hand control back to the user. This has been missed
-> repeatedly in the past. Before ending any turn that contains such a
-> report, explicitly re-read the report you just wrote and ask yourself
-> "did I already run Set-Clipboard on this exact content in this turn?" -
-> if not, do it now, then finish.
+> **MOST-MISSED RULES — CHECK AT THE RELEVANT MOMENT, EVERY TIME:**
+>
+> **1. Before running ANY test, assess relevance FIRST.** Before issuing
+> a test-runner command for any reason — a single test, a class, a file,
+> or a suite — stop and explicitly name which specific tests are
+> strictly relevant to the change just made, and why. Never run a
+> broader selection "to be safe," an unrelated file, or a whole suite,
+> without having first named that precise relevant set. This has been
+> missed repeatedly, including running an entire test file (dozens of
+> tests across many unrelated classes) when only one or two specific
+> classes actually covered the change made. Concrete fix: before
+> constructing the test-run command, first identify (in your own
+> reasoning/response, even briefly) exactly which test classes/methods
+> cover the changed code and which classes in the same file do not, THEN
+> run only the relevant ones - never the whole file "because it's the
+> right file anyway."
+>
+> **2. Every report must be copied to the clipboard.** Any message you
+> are about to send that is a report (investigation report, diagnostic
+> report, phase report, completion report, findings, root-cause analysis
+> - any structured summary written up for the user, however short,
+> including a brief "what changed / tests run / results" completion
+> summary for a small task) MUST be copied to the Windows clipboard via
+> PowerShell `Set-Clipboard` in the SAME turn, before you stop and hand
+> control back to the user.
+>
+> This has been missed repeatedly, on both large and small reports alike.
+> Root cause: the check was previously only a mental/internal one ("ask
+> yourself...") with no concrete forcing step, and the final tool call in
+> a turn is normally substantive work (tests, git status, etc.) after
+> which it is easy to move straight to the final text without one more
+> deliberate action. To fix this structurally, not just by remembering
+> harder:
+> - Treat the clipboard copy as a mandatory, separate, standalone tool
+>   call in the action sequence for any such turn - the same kind of
+>   required step as running a test, never an optional afterthought
+>   folded into other work.
+> - Finalise the report text FIRST, then immediately issue one dedicated
+>   `Set-Clipboard` call with that exact text as the literal next tool
+>   call - not bundled with, or justified as already covered by, an
+>   earlier unrelated tool call in the same turn.
+> - Before ending any turn that contains such a report, explicitly
+>   re-read what you are about to send and ask "did I already run
+>   Set-Clipboard on this exact content, as its own tool call, in this
+>   turn?" - if not, do it now, then finish.
 
 Treat cost control as a high priority in every task and future session in this project.
 
@@ -21,9 +56,16 @@ Treat cost control as a high priority in every task and future session in this p
   change or concrete unresolved concern that justifies them.
 - Run validation proportionate to the change. Avoid broad suites for wording
   changes or other low-impact edits unless explicitly requested or required.
+- See "MOST-MISSED RULE 1" above: never run any test without first naming
+  exactly which tests are strictly relevant to the change in question.
 - Before re-running a test (or suite), check whether anything relevant has
   changed since it last ran. If nothing relevant changed, reuse the prior
   result instead of re-running it.
+- Immediately before running any battery/suite of tests (not just a single
+  test), explicitly assess whether that repetition is absolutely necessary -
+  e.g. whether the exact suite, or a superset covering it, already ran
+  fresh and passed since the last relevant change. If so, skip the rerun
+  and say so, rather than running it again "to be safe."
 - Always copy every report (investigation reports, phase reports,
   completion reports, findings, root-cause analyses - anything written up
   as a structured summary for the user) to the Windows clipboard in plain
@@ -60,3 +102,120 @@ For features involving both backend and frontend, implement and validate the bac
 For multi-phase tasks, work in clearly defined phases and report the outcome of each phase before proceeding to the next. Do not silently move from investigation into implementation or from one architectural layer into another.
 
 Do not introduce complexity solely to accommodate hypothetical future requirements. Prefer deferring genuinely disproportionate complexity to a later iteration.
+
+## Development Cycle and Project Stage
+
+Always establish the current development stage before acting. The normal cycle is:
+
+1. **Implement** — make the requested code changes and create or update migrations as needed.
+2. **Test in development** — run relevant automated tests, apply pending migrations to the confirmed development database when appropriate, and verify the resulting behaviour.
+3. **Review** — inspect the changes, address failures, and establish that the implementation is ready to commit.
+4. **Commit** — normally after each completed and accepted task, with explicit authorisation. Push is a separate operation requiring separate authorisation.
+5. **Deploy and migrate production** — only when explicitly requested or authorised as a production deployment task.
+
+### Periodic code-quality reviews
+
+- At appropriate development milestones, remind the user to consider a code-quality and architectural review. Do not interrupt individual feature work unnecessarily.
+- Reviews should look for dead code, duplicated or inconsistent logic, unnecessary complexity, design weaknesses and opportunities to improve maintainability and user comprehensibility.
+- Investigate before recommending refactoring. Distinguish genuine problems from deliberate differences in business logic.
+- Report findings, explain their significance and suggest priorities. Do not undertake broad refactoring without the user's agreement.
+- Do not recommend refactoring merely because code could be written differently. The objective is a simpler, more reliable and understandable application, not an ever-changing codebase.
+
+### Manual functional testing
+
+- For substantial user-facing features, create or update a practical manual functional test script under `docs/manual-testing/`, alongside the automated tests.
+- Scripts should describe the necessary preconditions, user actions and expected results, including relevant edge cases.
+- Keep scripts concise, focused on observable behaviour and consistent with the documented use cases.
+- When implementation changes existing behaviour, update the affected scripts rather than allowing them to become outdated.
+
+## Git discipline and incremental commits
+
+Treat Git commits as routine development checkpoints, not as an end-of-project activity.
+
+### Rules
+
+- Keep the working tree focused on one agreed architectural task or coherent feature at a time.
+- Do not allow unrelated completed work to accumulate as uncommitted changes.
+- Once a task has been implemented, appropriately tested, reviewed and accepted, prepare a thematic commit before beginning the next independent task.
+- Normally, one completed architectural task should produce one commit. Substantial tasks may require multiple commits where they represent coherent, independently reviewable stages.
+- Each commit should represent one logical change. Keep related implementation code, tests and migrations together. Never separate a migration from the model or feature changes it supports.
+- Before staging, inspect the working-tree status and identify unrelated, local-only or generated files that must be excluded.
+- Stage one thematic group at a time. Inspect the staged diff and show the user what will be included before committing.
+- Do not stage unrelated changes merely because they are already present in the working tree. Use selective or partial staging where necessary.
+- Use concise, descriptive commit messages that explain the purpose of the change.
+- After committing, check that the intended changes were committed and report the resulting commit hash and any remaining uncommitted changes.
+- Before starting a new independent architectural task, normally ensure that the previous task has been committed and the working tree is clean. If unrelated or uncommitted changes remain, stop and resolve them rather than silently incorporating them into the next task.
+
+### Authorisation
+
+- Implementation, testing and review do not automatically authorise staging or committing. Obtain the user's approval before each commit unless the current task explicitly authorises a defined series of commits.
+- Local commits do not authorise pushing to a remote repository.
+- Pushing does not authorise deployment.
+- Treat staging, committing, pushing and deploying as separate operations requiring their own authorisation.
+- Never amend, squash, rebase or rewrite existing commits without explicit authorisation.
+
+### Objective
+
+Maintain a short, comprehensible history of independently reviewable changes. Avoid large accumulated diffs that are expensive to inspect, difficult to attribute and risky to commit.
+
+### Rules
+
+- Treat the current task and the actual state of the repository as authoritative. Do not assume that development work is a production deployment exercise.
+- Keep track of the current stage and report it briefly when it materially affects the next action.
+- Do not advance to another stage without the user's instruction or clear authorisation in the current task.
+- New or modified migration files that are not yet committed are normal during implementation. Their absence from Git history is not, by itself, a defect.
+- Before applying migrations or changing data, establish which database is targeted. Never assume that local settings point to development, or that a database is safe to modify.
+- Never access or modify production data, apply production migrations, deploy, commit, or push unless the current task explicitly authorises the relevant action. Authorisation to commit may cover a specifically defined series of thematic commits, but does not automatically authorise other commits or any push. Pushing and deploying always require separate explicit authorisation.
+- Do not introduce production-readiness audits, deployment procedures, backups, or other ancillary work into an ordinary development task unless they are necessary to perform that task safely.
+- When a task fails, investigate within its authorised scope. Do not improvise destructive repairs, alter migration history, or expand the task without approval.
+- Preserve useful existing data and project conventions unless the task explicitly calls for a reset or replacement.
+- At the end of each task, report what changed, what was tested, the actual results, the current development stage, and the next logical step. Clearly distinguish completed work from recommendations.
+
+The objective is to progress through the development cycle deliberately, without prematurely treating uncommitted development work as a production release.
+
+## Efficient use of project snapshots
+
+When a project ZIP or other compact source snapshot is available, use it as a reference for understanding the architecture and locating relevant code whenever doing so is more economical than exploring the working tree.
+
+Inspect the archive's file listing and relevant files selectively; do not read the entire application unnecessarily.
+
+Use the snapshot to establish context, trace existing patterns and identify likely implementation points.
+
+Before editing, verify the relevant files in the actual working tree. The working tree is authoritative for implementation.
+
+If the snapshot and working tree differ, follow the working tree and investigate the discrepancy only where it matters.
+
+Never assume a sanitised snapshot contains every file or all original configuration values.
+
+Keep investigation, tool calls, output and validation proportionate to the task.
+
+## Password-string masking in tool output
+
+Tool output in this environment (view/grep/powershell alike) redacts
+password-like literals, rendering them as a literal `******` placeholder.
+This masking happens only at the display layer; it does not reflect what
+is actually stored in the file.
+
+This has caused real bugs more than once: copying a masked `******` from
+viewed/grepped existing test code (e.g. `create_user(username="x", ******)`)
+into *new* code via create/edit produces invalid Python (`******` is not
+valid syntax) because the edit tool writes exactly what it's given, with
+no masking applied on write.
+
+Workaround:
+- Never retype or reuse a masked `******` you see in tool output as part
+  of new code you are writing.
+- When `old_str`/`new_str` must reproduce an existing masked line
+  unchanged (e.g. moving or wrapping a line without changing its
+  content), copy it verbatim including the `******` placeholder -- the
+  underlying file content round-trips correctly as long as you don't
+  retype it.
+- When writing brand-new lines that need a password-like argument (e.g.
+  `User.objects.create_user(..., password="...")`), always supply your
+  own explicit literal (e.g. `password="pass1234"`) rather than trying to
+  reproduce the masked value.
+- After any edit that introduces or touches a password-like literal,
+  syntax-check the file (e.g. `python -c "import ast; ast.parse(open(path).read())"`)
+  before relying on it, since a stray `******` will otherwise only surface
+  as a confusing runtime/syntax error later.
+

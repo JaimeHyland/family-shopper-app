@@ -17,9 +17,9 @@
         <div class="col-md-8 mt-3 offset-md-2">
             <h3>{% trans "Log in" %}</h3>
 
-            {% url 'logged_out_homepage' as registration_url %}
+            {% url 'registration_start' as registration_url %}
             <p>{% blocktrans %}Welcome back to the Family Shopping List app. To use the shopping list please log in.
-                If you have not yet registered to use the app, then please <a class="link" href="{{ registration_url }}">register your family</a>
+                If you have not yet registered to use the app, then please <a class="link" href="{{ registration_url }}">register</a>
                 before you do anything else.{% endblocktrans %}</p>
         </div>
     </div>

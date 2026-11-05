@@ -1,20 +1,22 @@
 {% extends "base.html" %}
 
-{% load custom_filters %}
-
 {% block content %}
 
 <div class="col-12 mt-3">
   <div class="row justify-content-center">
     <div class="col-lg-8">
+      {% for message in messages %}
+      <div class="alert alert-{{ message.tags }} mx-3" role="status">{{ message }}</div>
+      {% endfor %}
       <div class="row">
         <div class="col-12 d-flex flex-wrap align-items-center justify-content-between mb-2">
           <div class="d-flex align-items-center gap-2 mx-3 mb-2">
-            {% if user|is_adult_filter %}
+            {% if request.family_membership.is_family_admin %}
             <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addProductModal">Add a new product</button>
             {% else %}
-            <button type="button" class="btn btn-close-white" data-bs-toggle="modal" data-bs-target="#addProductModal" disabled>Ask your parents to add a new product</button>
+            <button type="button" class="btn btn-close-white" data-bs-toggle="modal" data-bs-target="#addProductModal" disabled>Ask a family admin to add a new product</button>
             {% endif %}
+            <a href="{% url 'seed_lists' family_slug=request.family.slug %}" class="btn btn-outline-primary">Use a seed list</a>
             <h3 class="mb-0">Products</h3>
           </div>
           <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mx-3 mb-2">
@@ -40,40 +42,45 @@
         </div>
       </div>
       <div class="row">
-        <form id="product-list-form" method="post" action="{% url 'add_to_shopping_list' family_slug=request.family.slug %}" class="w-100">
-          {% csrf_token %}
-          {% if grouped_products is not None %}
-            {% for group in grouped_products %}
-            <h4 class="mx-3">{{ group.label }}</h4>
-            {% if group.subgroups %}
-              {% for sub_label, sub_items in group.subgroups %}
-              <h5 class="mx-3 ps-3 fst-italic text-muted">{{ sub_label }}</h5>
-              <ul class="list-group list-group-flush mx-lg-3">
-                {% for product in sub_items %}
-                  {% include "shopping_list/_product_row.html" %}
-                {% endfor %}
-              </ul>
+        {% if grouped_products is not None %}
+          {% for group in grouped_products %}
+          <h4 class="mx-3">{{ group.label }}</h4>
+          {% if group.subgroups %}
+            {% for sub_label, sub_items in group.subgroups %}
+            <h5 class="mx-3 ps-3 fst-italic text-muted">{{ sub_label }}</h5>
+            <ul class="list-group list-group-flush mx-lg-3">
+              {% for product in sub_items %}
+                {% include "shopping_list/_product_row.html" %}
               {% endfor %}
-            {% else %}
-              <ul class="list-group list-group-flush mx-lg-3">
-                {% for product in group.items %}
-                  {% include "shopping_list/_product_row.html" %}
-                {% endfor %}
-              </ul>
-            {% endif %}
+            </ul>
             {% endfor %}
           {% else %}
             <ul class="list-group list-group-flush mx-lg-3">
-              {% for product in product_list %}
+              {% for product in group.items %}
                 {% include "shopping_list/_product_row.html" %}
               {% endfor %}
             </ul>
           {% endif %}
-          <button type="submit" id="add-product-to-list" class="btn btn-primary mt-3" disabled>Add marked product(s) to shopping list</button>
-          <button type="submit" id="delete-product" class="btn btn-primary mt-3" disabled>Remove selected product(s) from database</button>
-        </form>
+          {% endfor %}
+        {% else %}
+          <ul class="list-group list-group-flush mx-lg-3">
+            {% for product in product_list %}
+              {% include "shopping_list/_product_row.html" %}
+            {% endfor %}
+          </ul>
+        {% endif %}
       </div>
     </div>
+  </div>
+</div>
+
+<!-- Toast for feedback when adding a product to the shopping list fails
+     (e.g. a network hiccup); success is reflected by the row's own "On
+     list" indicator updating via the real-time broadcast. -->
+<div class="toast toast-position align-items-center text-bg-danger border-0" role="alert" aria-live="assertive" aria-atomic="true" id="addToListErrorToast">
+  <div class="d-flex">
+    <div class="toast-body">Couldn't add that to the shopping list. Please try again.</div>
+    <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
   </div>
 </div>
 
@@ -146,6 +153,62 @@
     </div>
   </div>
 </div>
+
+<!-- Modal offering a choice when a selected product is already on the
+     active shopping list: increase its quantity, or create a distinct
+     variant product and add that instead. Shown automatically (see
+     extra_js below) whenever there is at least one pending conflict. -->
+{% if duplicate_conflicts %}
+<div class="modal fade" id="duplicateProductModal" tabindex="-1" aria-labelledby="duplicateProductModalLabel" aria-hidden="true" data-bs-backdrop="static">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="duplicateProductModalLabel">Already on your shopping list</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        {% for conflict in duplicate_conflicts %}
+        <div class="border rounded p-3 mb-3">
+          <p>
+            <strong>{{ conflict.product.product_name }}</strong> is already on your
+            shopping list (currently {{ conflict.on_list_quantity }}).
+            What would you like to do?
+          </p>
+
+          <form method="post" action="{% url 'resolve_shopping_list_duplicate' family_slug=request.family.slug %}" class="d-inline">
+            {% csrf_token %}
+            <input type="hidden" name="product_id" value="{{ conflict.product.id }}">
+            <input type="hidden" name="choice" value="increase_quantity">
+            <button type="submit" class="btn btn-primary btn-sm">
+              Increase quantity to {{ conflict.on_list_quantity|add:1 }}
+            </button>
+          </form>
+
+          {% if request.family_membership.is_family_admin %}
+          <form method="post" action="{% url 'resolve_shopping_list_duplicate' family_slug=request.family.slug %}" class="d-inline-flex align-items-center gap-1 mt-2 mt-sm-0">
+            {% csrf_token %}
+            <input type="hidden" name="product_id" value="{{ conflict.product.id }}">
+            <input type="hidden" name="choice" value="create_variant">
+            <input type="text" name="variant_name" class="form-control form-control-sm" style="width: auto;" placeholder="New variant name" required>
+            <button type="submit" class="btn btn-secondary btn-sm">Create a variant</button>
+          </form>
+          {% endif %}
+
+          <form method="post" action="{% url 'dismiss_shopping_list_duplicate' family_slug=request.family.slug %}" class="d-inline">
+            {% csrf_token %}
+            <input type="hidden" name="product_id" value="{{ conflict.product.id }}">
+            <button type="submit" class="btn btn-link btn-sm text-muted">Don't add it this time</button>
+          </form>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 
 <!-- Modal to allow the user to filter the product list by category/shop -->
 <div class="modal fade" id="productFilterModal" tabindex="-1" aria-labelledby="productFilterModalLabel" aria-hidden="true">

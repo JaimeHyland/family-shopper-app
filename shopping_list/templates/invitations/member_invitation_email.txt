@@ -1,0 +1,9 @@
+Hello,
+
+You've been invited to join the family "{{ family_name }}" on the Family Shopping List app using this email address.
+
+To accept the invitation and set up your account, open this link:
+
+{{ completion_url }}
+
+This link will expire in a few days and can only be used once. If you weren't expecting this invitation, you can safely ignore this email.

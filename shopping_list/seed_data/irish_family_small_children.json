@@ -1,0 +1,52 @@
+{
+  "name": "Irish family with two small children",
+  "categories": [
+    {
+      "name": "Vegetables",
+      "products": [
+        "Potatoes", "Onions", "Carrots", "Broccoli", "Chives",
+        "Mushrooms", "Peppers", "Cucumber", "Tomatoes"
+      ]
+    },
+    {
+      "name": "Fruit",
+      "products": ["Apples", "Bananas", "Oranges", "Pears", "Strawberries"]
+    },
+    {
+      "name": "Bread and Bakery",
+      "products": ["Sliced bread", "Brown bread", "Bread rolls", "Wraps"]
+    },
+    {
+      "name": "Dairy and Eggs",
+      "products": ["Milk", "Butter", "Cheddar cheese", "Eggs", "Natural yoghurt", "Cream"]
+    },
+    {
+      "name": "Meat and Fish",
+      "products": ["Chicken fillets", "Beef mince", "Sausages", "Salmon fillets", "Cooked ham", "Tinned tuna"]
+    },
+    {
+      "name": "Cupboard Staples",
+      "products": [
+        "Porridge oats", "Wheat biscuits", "Pasta", "Rice",
+        "Baked beans", "Tinned tomatoes", "Tinned sweetcorn", "Kidney beans",
+        "Pasta sauce", "Stock cubes", "Flour", "Vegetable oil", "Jam"
+      ]
+    },
+    {
+      "name": "Frozen Food",
+      "products": ["Frozen peas", "Frozen sweetcorn", "Fish fingers"]
+    },
+    {
+      "name": "Snacks",
+      "products": ["Crackers", "Rice cakes", "Raisins", "Oat biscuits"]
+    },
+    {
+      "name": "Tea, Coffee and Drinks",
+      "products": ["Tea bags", "Instant coffee", "Orange juice"]
+    },
+    {
+      "name": "Household Essentials",
+      "products": ["Toilet paper", "Kitchen roll", "Washing-up liquid", "Laundry detergent", "Bin bags", "Sponges"]
+    }
+  ]
+}

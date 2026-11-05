@@ -1,5 +1,5 @@
 from django import forms
-from .models import Product, Shop, Category
+from .models import Product, Shop, Category, FamilyMembership
 from django.core.exceptions import ValidationError
 from django_summernote.widgets import SummernoteWidget
 
@@ -140,3 +140,19 @@ class CategoryForm(forms.ModelForm):
                 )
 
         return category_name
+
+
+class MembershipPermissionsForm(forms.ModelForm):
+    """Lets a family administrator change one existing member's role and
+    six granular permissions. Never creates or removes a membership
+    itself (that is handled separately by FamilyMembersView), and never
+    touches family/user/display_name."""
+
+    class Meta:
+        model = FamilyMembership
+        fields = [
+            'role',
+            'can_add_list', 'can_remove_list',
+            'can_add_catalogue', 'can_remove_catalogue',
+            'can_add_shops', 'can_remove_shops',
+        ]

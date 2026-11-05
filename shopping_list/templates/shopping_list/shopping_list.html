@@ -1,14 +1,21 @@
 {% extends "base.html" %}
 {% load custom_filters %}
+{% load i18n_json %}
 
 {% block content %}
+
+{% for message in messages %}
+<div class="container mt-3">
+  <div class="alert alert-{{ message.tags }}" role="status">{{ message }}</div>
+</div>
+{% endfor %}
 
 <div class="col-12 mt-3">
   <div class="row justify-content-center">
     <div class="col-lg-8">
       <div class="row">
         <div class="col-12 d-flex flex-wrap align-items-center justify-content-between mb-2">
-          <h3 class="mx-3 mb-2">Current shopping list</h3>
+          <h3 class="mx-3 mb-2">{{ request.family.name }} shopping list</h3>
           <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mx-3 mb-2">
             <form method="get" action="{% url 'shopping_list' family_slug=request.family.slug %}" class="d-flex align-items-center gap-1 mb-0">
               <label for="group-by-select" class="mb-0">Group by:</label>
@@ -28,62 +35,57 @@
               <a class="btn btn-link btn-sm" href="{% url 'shopping_list' family_slug=request.family.slug %}?filter_applied=1">Remove filter</a>
               {% endif %}
             </div>
+            <div class="d-flex align-items-center gap-1">
+              <!-- Always available, regardless of whether the list is
+                   "complete" - the user may decide to close it out even
+                   with unpurchased or cancelled items still on it. -->
+              <button type="button" class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#listCompleteModal">
+                {% t "shopping_list.close_list_button" %}
+              </button>
+            </div>
           </div>
         </div>
       </div>
+        <div class="mx-lg-3 mb-2">
+          <a href="{% url 'product_list' family_slug=request.family.slug %}" class="btn btn-primary">{% t "shopping_list.add_items" %}</a>
+        </div>
         <form id="shopping-list-form" method="post" action="{% url 'shopping_list' family_slug=request.family.slug %}" class="w-100">
           {% csrf_token %}
           <!-- Input types are defined in javascript and parsed by ShoppingListView.post() -->
           <input type="hidden" id="item-id" name="item_id" value="">
+          <input type="hidden" name="shopping_list_id" value="{{ open_list.id }}">
           <input type="hidden" id="action-type" name="action" value="">
           <ul id="shopping_list" class="list-group list-group-flush mx-lg-3 hide-cancelled">
-            <li class="list-group-item d-flex justify-content-between align-items-center">
-              <h5>Cancelled</h5>
-                <h5>In basket</h5>
-            </li>
-            {% if grouped_shopping_list is not None %}
-              {% for group in grouped_shopping_list %}
-              <li class="list-group-item bg-light fw-bold">{{ group.label }}</li>
-              {% if group.subgroups %}
-                {% for sub_label, sub_items in group.subgroups %}
-                <li class="list-group-item ps-4 fst-italic text-muted">{{ sub_label }}</li>
-                {% for item in sub_items %}
-                  {% include "shopping_list/_list_item_row.html" %}
-                {% endfor %}
-                {% endfor %}
-              {% else %}
-                {% for item in group.items %}
-                  {% include "shopping_list/_list_item_row.html" %}
-                {% endfor %}
-              {% endif %}
-              {% endfor %}
-            {% else %}
-              {% for item in shopping_list %}
-                {% include "shopping_list/_list_item_row.html" %}
-              {% endfor %}
-            {% endif %}
-            <button type="button" class="btn btn-outline-secondary btn-sm" id="cancelled-toggle-btn" onclick="toggleCancelledVisibility()">Show cancelled items</button>
-              <a href="{% url 'product_list' family_slug=request.family.slug %}" class="btn btn-primary">Add item(s) to shopping list</a>
-              <button type="button" id="buy-my-basket-btn" class="btn btn-success" onclick="buyMyBasket()">Check out my basket</button>
+            {% include "shopping_list/_shopping_list_rows.html" %}
           </ul>
 
           <div class="mx-lg-3 mt-2">
-            <button type="button" class="btn btn-outline-secondary btn-sm" id="bought-toggle-btn" data-bs-toggle="collapse" data-bs-target="#bought-section"
-              aria-expanded="false" aria-controls="bought-section">
-              <span id="bought-toggle-label">Show purchased items</span> (<span id="bought-count">{{ bought_items|length }}</span>)
-            </button>
             <div class="collapse" id="bought-section">
               <ul id="bought-items-list" class="list-group list-group-flush">
-                {% for item in bought_items %}
-                <li class="list-group-item text-muted" data-item-id="{{ item.id }}">
-                  {{ item.product.product_name }} ({{ item.quantity_bought }})
-                  {% if item.buyer %} &mdash; bought by {{ item.buyer|member_display_name:request.family }}{% endif %} {# noqa #}
-                </li>
-                {% endfor %}
+                {% include "shopping_list/_bought_rows.html" %}
               </ul>
             </div>
           </div>
+          <div class="mx-lg-3 mt-3">
+            <button type="button" id="buy-my-basket-btn" class="btn btn-success" onclick="buyMyBasket()" {% if not has_basket_items %}disabled{% endif %}>{% t "shopping_list.purchase_basket" %}</button>
+          </div>
         </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="finalUnitModal" tabindex="-1" aria-labelledby="finalUnitModalLabel" aria-describedby="finalUnitModalDescription" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="finalUnitModalLabel">{% t 'shopping_list.final_unit.title' %}</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{% t 'shopping_list.close_modal.close_aria' %}"></button>
+      </div>
+      <div class="modal-body" id="finalUnitModalDescription">{% t 'shopping_list.final_unit.description' %}</div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{% t 'shopping_list.final_unit.dismiss' %}</button>
+        <button type="button" class="btn btn-danger" id="confirm-final-unit">{% t 'shopping_list.final_unit.confirm' %}</button>
       </div>
     </div>
   </div>
@@ -114,6 +116,17 @@
         </div>
         <div class="modal-body">
           <fieldset class="mb-3">
+            <legend class="h6 mb-1">{% t "shopping_list.visibility" %}</legend>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="bought-toggle" aria-controls="bought-section">
+              <label class="form-check-label" for="bought-toggle">{% t "shopping_list.show_bought" %} (<span id="bought-count">{{ bought_unit_count }}</span>)</label>
+            </div>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="cancelled-toggle" aria-controls="shopping_list" onchange="toggleCancelledVisibility()">
+              <label class="form-check-label" for="cancelled-toggle">{% t "shopping_list.show_cancelled" %}</label>
+            </div>
+          </fieldset>
+          <fieldset class="mb-3">
             <legend class="h6 mb-1">Filter by category</legend>
             {% for category in categories %}
             <div class="form-check">
@@ -141,3 +154,50 @@
   </div>
 </div>
 {% endblock %}
+
+<!-- Lets the user close out the current list at any time, whether or
+     not it still has unpurchased or cancelled items (via the "Close
+     list" button above), or in response to the "list complete"
+     suggestion once every item has been bought or cancelled. Always
+     present in the DOM (not conditionally rendered) so either the
+     button or a live WebSocket notification can open it. -->
+<div class="modal fade" id="listCompleteModal" tabindex="-1" aria-labelledby="listCompleteModalLabel" aria-hidden="true" data-bs-backdrop="static">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="listCompleteModalLabel">{% t "shopping_list.close_modal.title" %}</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{% t 'shopping_list.close_modal.close_aria' %}"></button>
+      </div>
+      <div class="modal-body">
+        <p>{% t "shopping_list.close_modal.intro" %}</p>
+        <form method="post" action="{% url 'close_shopping_list' family_slug=request.family.slug %}" id="close-list-form" onsubmit="this.querySelector('button[type=submit]').disabled = true;">
+          {% csrf_token %}
+          <input type="hidden" name="shopping_list_id" value="{{ open_list.id }}">
+          <div class="form-check mb-2">
+            <input class="form-check-input" type="checkbox" name="carry_forward_unpurchased" id="carry-forward-unpurchased" value="on">
+            <label class="form-check-label" for="carry-forward-unpurchased">
+              {% t "shopping_list.close_modal.carry_unpurchased_label" %}
+            </label>
+            <div class="form-text">{% t "shopping_list.close_modal.carry_unpurchased_help" %}</div>
+          </div>
+          <div class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" name="carry_forward_cancelled" id="carry-forward-cancelled" value="on">
+            <label class="form-check-label" for="carry-forward-cancelled">
+              {% t "shopping_list.close_modal.carry_cancelled_label" %}
+            </label>
+            <div class="form-text">{% t "shopping_list.close_modal.carry_cancelled_help" %}</div>
+          </div>
+          <button type="submit" class="btn btn-primary">{% t "shopping_list.close_modal.submit" %}</button>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <form method="post" action="{% url 'dismiss_shopping_list_completion' family_slug=request.family.slug %}" class="m-0">
+          {% csrf_token %}
+          <input type="hidden" name="shopping_list_id" value="{{ open_list.id }}">
+          <input type="hidden" name="item_count" value="{{ list_item_count }}">
+          <button type="submit" class="btn btn-secondary">{% t "shopping_list.close_modal.not_now" %}</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>

@@ -1,4 +1,5 @@
 {% load static %}
+{% load i18n_json %}
 {% load custom_filters %}
 {% url 'home' as home_url %}
 {% url 'account_login' as login_url %}
@@ -67,7 +68,7 @@
                             aria-current="page" href="{{ product_list_url }}">Products</a>
                     </li>
                     {% endif %}
-                    {% if user|is_adult_filter and request.family %}
+                    {% if request.family %}
                     <li class="nav-item">
                         {% url 'category_list' family_slug=request.family.slug as category_list_url %}
                         <a class="nav-link {% if request.path == category_list_url %}active{% endif %}"
@@ -84,7 +85,14 @@
                         <a class="nav-link" href="{% url 'family_chooser' %}">Switch family</a>
                     </li>
                     {% endif %}
-                    {% if user|is_adult_filter %}
+                    {% if request.family and request.family_membership.is_family_admin %}
+                    <li class="nav-item">
+                        {% url 'family_members' family_slug=request.family.slug as family_members_url %}
+                        <a class="nav-link {% if request.path == family_members_url %}active{% endif %}"
+                            aria-current="page" href="{{ family_members_url }}">Family members</a>
+                    </li>
+                    {% endif %}
+                    {% if user.is_authenticated %}
                     <li class="nav-item dropdown">
                         <a class="nav-link dropdown-toggle" href="#" id="userAccountDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
                             User account
@@ -105,14 +113,14 @@
                     {% else %}
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == login_url %}active{% endif %}" aria-current="page"
-                            href="{% url 'account_logout' %}">Log out</a>
+                            href="{% url 'account_login' %}">Log in</a>
                     </li>
                     {% endif %}
 
                 </ul>
                 <span class="navbar-text text-muted">
                     {% if user.is_authenticated %}
-                    <p class="text-end m-3">You are logged in as {{ user }}</p>
+                    <p class="text-end m-3">You are logged in as {{ user|logged_in_identity:request }}</p>
                     {% else %}
                     <p class="text-end m-3">You are not logged in</p>
                     {% endif %}
@@ -168,35 +176,6 @@
 
 {% block extra_js %}
 
-<!--javascript to toggle add and delete buttons on product_list template to enabled<->disabled: Runs any time a checkbox status is changed -->
-<script>
-    document.addEventListener('DOMContentLoaded', function() {
-        const chkbxs = document.querySelectorAll('.add-or-delete');
-        const addBtn = document.getElementById('add-product-to-list');
-        const delBtn = document.getElementById('delete-product');
-    
-        // Enable add-product btn if any chkbox is enabled, disable it otherwise
-        function toggleButtonState() {
-            if (addBtn && delBtn) {
-                const anythingChecked = Array
-                    .from(chkbxs)
-                    .some(checkbox => checkbox.checked);
-                addBtn.disabled = !anythingChecked;
-                delBtn.disabled = !anythingChecked;
-            }
-        }
-
-        if (chkbxs.length > 0) {
-            toggleButtonState();
-            // Listen for changes on any checkbox
-            chkbxs.forEach(checkbox => {
-                checkbox.addEventListener('change', toggleButtonState);
-            });
-        }
-    });
-</script>
-
-
 <!--javascript to run toast so that the user knows when a new product has failed to be saved 
 (cos its name is identical to an existing one) -->
 {% if form.errors %}
@@ -211,12 +190,33 @@
 </script>
 
 {% endif %}
+
+<!--Automatically opens the "already on your list" prompt whenever the
+    server has at least one pending duplicate-product choice to show. -->
+{% if duplicate_conflicts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        var duplicateModalEl = document.getElementById('duplicateProductModal');
+        if (duplicateModalEl) {
+            new bootstrap.Modal(duplicateModalEl).show();
+        }
+    });
+</script>
+{% endif %}
+
+<!--Automatically opens the "list complete, start a new one?" suggestion
+    whenever the server determines (respecting this session's earlier
+    "Not now") that the open list is fully bought/cancelled. -->
+{% if show_completion_suggestion %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        showListCompleteModal();
+    });
+</script>
+{% endif %}
 {% endblock %}
 
 <script>
-// Change presentation of list items when user turns cancelled or 
-// in-basket checkboxes to True.
-
 function getCSRFToken() {
     let name = 'csrftoken';
     let cookieValue = null;
@@ -235,40 +235,9 @@ function getCSRFToken() {
     return cookieValue; 
 }
 
-function toggleCancelUncancel(checkbox, itemId) {
-
-    if (checkbox.checked) {
-        if (confirm(
-            "Are you sure you don't want this item in your basket this time after all?"
-        )) {
-            updateDatabase(checkbox, itemId);
-        } else {
-            // Declined: revert to uncancelled, no update sent.
-            checkbox.checked = false;
-        }
-    } else {
-        if (confirm("Are you sure you want to put this back on the list?")) {
-            updateDatabase(checkbox, itemId);
-        } else {
-            // Declined: revert to cancelled, no update sent.
-            checkbox.checked = true;
-        }
-    }
-}
-
-function updateDatabase(checkbox, itemId) {
-    let action;
-    // identify action based on whether it's the cancelled
-    // or completed checkbox for the item.
-    if (checkbox.name === 'cancelled_item') {
-        action = checkbox.checked ? 'cancel' : 'uncancel';
-    } else {
-        action = checkbox.checked ? 'add_to_basket' : 'remove_from_basket';
-    }
-
-    updateForm(itemId, action);
-    submitForm();
-    // The server broadcasts the saved state over the socket once the POST is handled.
+// Bootstrap 5.0.1 provides getInstance(), but not getOrCreateInstance().
+function getBootstrapInstance(Component, element, options) {
+    return Component.getInstance(element) || new Component(element, options);
 }
 
 function submitForm() {
@@ -282,16 +251,29 @@ function submitForm() {
             'X-CSRFToken': getCSRFToken()
         },  
     })
-    .then(response => {                                               // eslint-disable-line
-        if (response.ok) {                                            // eslint-disable-line
-            console.log('Form submitted successfully');               // eslint-disable-line
-        } else {                                                      // eslint-disable-line
-            console.error('Form submission failed', response.status); // eslint-disable-line
-        }                                                             // eslint-disable-line
-    })                                                                // eslint-disable-line
-    .catch(error => {                                                 // eslint-disable-line
-        console.error('Form submission error', error);                // eslint-disable-line
-    });                                                               // eslint-disable-line
+    .then(async response => {
+        if (response.status === 409) {
+            const data = await response.json();
+            if (data.confirmation_required) {
+                showFinalUnitModal(data.item_id);
+                return;
+            }
+        }
+        if (!response.ok) {
+            // Stale page or rejected action: tell the user, then resync
+            // from the server's persisted state.
+            console.error('Form submission failed', response.status);
+            alert(I18N['shopping_list.action_rejected']);
+            window.location.reload();
+            return;
+        }
+        refreshShoppingListRows();
+    })
+    .catch(error => {
+        console.error('Form submission error', error);
+        alert(I18N['shopping_list.action_rejected']);
+        window.location.reload();
+    });
 }
 
 function updateForm(itemId, action) {
@@ -305,70 +287,262 @@ function buyMyBasket() {
     // The server broadcasts the bought items over the socket once the POST is handled.
 }
 
+// Submits one product row's own small add-to-shopping-list form via
+// fetch() rather than a full page navigation, so a plain successful add
+// doesn't reload the page (the row's "On list" indicator updates itself
+// from the real-time broadcast instead). If the server reports a
+// duplicate-product choice to make, the existing server-rendered prompt
+// is reached by actually following that redirect, rather than
+// reimplementing it here.
+function handleProductAddSubmit(event) {
+    event.preventDefault();
+    const form = event.target;
+    const button = form.querySelector('.product-add-btn');
+    if (!button || button.disabled) {
+        // Already submitting; ignore a rapid repeat click.
+        return;
+    }
+    button.disabled = true;
+
+    fetch(form.getAttribute('action'), {
+        method: 'POST',
+        body: new FormData(form),
+        headers: {
+            'X-CSRFToken': getCSRFToken()
+        },
+    })
+    .then(response => {                                                  // eslint-disable-line
+        if (!response.ok) {                                              // eslint-disable-line
+            throw new Error('Request failed: ' + response.status);       // eslint-disable-line
+        }                                                                // eslint-disable-line
+        if (new URL(response.url).pathname === window.location.pathname) { // eslint-disable-line
+            // A duplicate-product prompt is waiting for this product.   // eslint-disable-line
+            window.location.href = response.url;                        // eslint-disable-line
+            return;                                                     // eslint-disable-line
+        }                                                                // eslint-disable-line
+        button.disabled = false;                                        // eslint-disable-line
+    })
+    .catch(error => {                                                   // eslint-disable-line
+        console.error('Add to shopping list failed', error);            // eslint-disable-line
+        button.disabled = false;                                       // eslint-disable-line
+        showAddToListError();                                           // eslint-disable-line
+    });
+}
+
+function showAddToListError() {
+    const toastEl = document.getElementById('addToListErrorToast');
+    if (toastEl) {
+        getBootstrapInstance(bootstrap.Toast, toastEl).show();
+    }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.product-add-form').forEach(function(form) { // eslint-disable-line
+        form.addEventListener('submit', handleProductAddSubmit);
+    });
+});
+
 // Purely a display toggle: shows/hides already-rendered cancelled items
 // via CSS. Never sends a request or touches the database. No-ops on
 // pages without a shopping list.
 function toggleCancelledVisibility() {
     const list = document.getElementById('shopping_list');
-    const toggleBtn = document.getElementById('cancelled-toggle-btn');
-    if (!list || !toggleBtn) {
+    const toggle = document.getElementById('cancelled-toggle');
+    if (!list || !toggle) {
         return;
     }
-    const stillHidden = list.classList.toggle('hide-cancelled');
-    toggleBtn.textContent = stillHidden
-        ? 'Show cancelled items'
-        : 'Hide cancelled items';
+    list.classList.toggle('hide-cancelled', !toggle.checked);
+    syncGroupHeadingVisibility();
 }
 
-// Keeps the "Show/Hide bought items" button label in sync with the
-// collapse state; no-ops on pages without a Bought section.
+// A category/shop heading (and, for combined groupings, its secondary
+// shop/category sub-heading) must not stay visible once every row under
+// it is hidden - e.g. cancelling a category's last visible item, or the
+// "Show cancelled items" toggle itself. Purely a display concern, exactly
+// like toggleCancelledVisibility() above: it never changes which rows
+// exist, only whether now-empty headings show. Re-evaluated from
+// scratch every time, so it is safe to call after any row/toggle change.
+function syncGroupHeadingVisibility() {
+    const list = document.getElementById('shopping_list');
+    if (!list) {
+        return;
+    }
+    const hideCancelled = list.classList.contains('hide-cancelled');
+    const isRowVisible = row => (
+        !(hideCancelled && row.classList.contains('cancelled-list-item'))
+    );
+
+    let primaryHeading = null;
+    let primaryHasVisibleItem = false;
+    let secondaryHeading = null;
+    let secondaryHasVisibleItem = false;
+
+    function closeSecondary() {
+        if (secondaryHeading) {
+            secondaryHeading.classList.toggle(
+                'd-none', !secondaryHasVisibleItem,
+            );
+        }
+        secondaryHeading = null;
+        secondaryHasVisibleItem = false;
+    }
+    function closePrimary() {
+        closeSecondary();
+        if (primaryHeading) {
+            primaryHeading.classList.toggle('d-none', !primaryHasVisibleItem);
+        }
+        primaryHeading = null;
+        primaryHasVisibleItem = false;
+    }
+
+    for (const row of list.children) {
+        if (row.dataset.groupHeading === 'primary') {
+            closePrimary();
+            primaryHeading = row;
+        } else if (row.dataset.groupHeading === 'secondary') {
+            closeSecondary();
+            secondaryHeading = row;
+        } else if (isRowVisible(row)) {
+            secondaryHasVisibleItem = true;
+            primaryHasVisibleItem = true;
+        }
+    }
+    closePrimary();
+}
+
+// Keeps the visibility filter in sync with Bootstrap's collapse state.
 document.addEventListener('DOMContentLoaded', function() {
-    const boughtToggleLabel = document.getElementById('bought-toggle-label');
+    const boughtToggle = document.getElementById('bought-toggle');
     const boughtSection = document.getElementById('bought-section');
-    if (!boughtToggleLabel || !boughtSection) {
+    if (!boughtToggle || !boughtSection) {
         return;
     }
 
-    const updateBoughtToggleLabel = function() {
-        boughtToggleLabel.textContent = boughtSection.classList.contains('show') // eslint-disable-line
-            ? 'Hide bought items'
-            : 'Show bought items';
+    const collapse = getBootstrapInstance(
+        bootstrap.Collapse, boughtSection, {toggle: false}
+    );
+    const syncBoughtToggle = function() {
+        boughtToggle.checked = boughtSection.classList.contains('show');
     };
-
-    updateBoughtToggleLabel();
-    boughtSection.addEventListener('shown.bs.collapse', updateBoughtToggleLabel); // eslint-disable-line
-    boughtSection.addEventListener('hidden.bs.collapse', updateBoughtToggleLabel); // eslint-disable-line
+    boughtToggle.addEventListener('change', function() {
+        if (boughtToggle.checked) {
+            collapse.show();
+        } else {
+            collapse.hide();
+        }
+    });
+    syncBoughtToggle();
+    toggleCancelledVisibility();
+    boughtSection.addEventListener('shown.bs.collapse', syncBoughtToggle);
+    boughtSection.addEventListener('hidden.bs.collapse', syncBoughtToggle);
 });
 
-// Moves a bought item's row out of the main list and into the collapsed
-// Bought section; used for both the acting user and other family members.
-function moveItemToBoughtSection(listItem, listItemId, data) {
-    const boughtList = document.getElementById('bought-items-list');
-    if (!boughtList) {
-        // Not on the shopping list page; nothing to update here.
+// All quantities, attribution, filters and per-viewer permissions come
+// from the same server templates as the initial page. Serialise refreshes
+// so an older response cannot overwrite a newer state.
+let rowRefreshRunning = false;
+let rowRefreshAgain = false;
+let pendingRowFocus = null;
+async function refreshShoppingListRows() {
+    const list = document.getElementById('shopping_list');
+    if (!list) {
         return;
     }
-    if (listItem) {
-        listItem.remove();
-    }
-    if (boughtList.querySelector(`[data-item-id='${listItemId}']`)) {
+    if (rowRefreshRunning) {
+        rowRefreshAgain = true;
         return;
     }
-    const boughtItem = document.createElement('li');
-    boughtItem.className = 'list-group-item text-muted';
-    boughtItem.dataset.itemId = listItemId;
-    let text = `${data.product_name} (${data.quantity_bought})`;
-    if (data.buyer_display_name) {
-        text += ` \u2014 bought by ${data.buyer_display_name}`;
-    }
-    boughtItem.textContent = text;
-    boughtList.appendChild(boughtItem);
-
-    const boughtCount = document.getElementById('bought-count');
-    if (boughtCount) {
-        boughtCount.textContent = boughtList.children.length;
+    rowRefreshRunning = true;
+    try {
+        do {
+            rowRefreshAgain = false;
+            const url = new URL(window.location.href);
+            url.searchParams.set('rows_only', '1');
+            const response = await fetch(url, {cache: 'no-store'});
+            if (!response.ok) {
+                throw new Error('Row refresh failed');
+            }
+            const data = await response.json();
+            if (data.shopping_list_id !== currentOpenListId) {
+                window.location.reload();
+                return;
+            }
+            const active = document.activeElement;
+            // A socket update must not steal focus from an open filter
+            // or any control outside the list. Remember clicked buttons
+            // because disabling one can move focus back to the body.
+            const focusSource = list.contains(active) ? active
+                : active === document.body ? pendingRowFocus : null;
+            const itemId = focusSource
+                ? focusSource.dataset.itemId || focusSource.value : null;
+            const sourceRow = focusSource && focusSource.closest('li[data-product-id]');
+            const controlSelector = focusSource && focusSource.dataset.basketAction
+                ? `[data-basket-action="${focusSource.dataset.basketAction}"]` : null;
+            list.innerHTML = data.rows_html;
+            syncGroupHeadingVisibility();
+            document.getElementById('bought-items-list').innerHTML = data.bought_html;
+            document.getElementById('bought-count').textContent = data.bought_count;
+            document.getElementById('buy-my-basket-btn').disabled = !data.has_basket_items;
+            if (itemId) {
+                const row = list.querySelector(`[data-unit-ids~="${itemId}"]`)
+                    || (sourceRow && list.querySelector(
+                        `[data-product-id="${sourceRow.dataset.productId}"][data-state="${sourceRow.dataset.state}"]`
+                    ));
+                const control = row && (
+                    (controlSelector && row.querySelector(`${controlSelector}:not(:disabled)`))
+                    || row.querySelector('button:not(:disabled)')
+                );
+                if (control && !control.disabled) {
+                    control.focus({preventScroll: true});
+                }
+            }
+            pendingRowFocus = null;
+            if (data.show_completion_suggestion) {
+                showListCompleteModal();
+            }
+        } while (rowRefreshAgain);
+    } catch (error) {
+        console.error('Shopping list refresh failed', error);
+        window.location.reload();
+    } finally {
+        rowRefreshRunning = false;
     }
 }
+
+let finalUnitId = null;
+function showFinalUnitModal(itemId) {
+    finalUnitId = itemId;
+    getBootstrapInstance(bootstrap.Modal, document.getElementById('finalUnitModal')).show();
+}
+const finalUnitModal = document.getElementById('finalUnitModal');
+if (finalUnitModal) {
+    finalUnitModal.addEventListener('hidden.bs.modal', function() {
+        finalUnitId = null;
+        // Dismissal only resynchronizes the display; it never submits a mutation.
+        refreshShoppingListRows();
+    });
+    document.getElementById('confirm-final-unit').addEventListener('click', function() {
+        if (finalUnitId === null) {
+            return;
+        }
+        const itemId = finalUnitId;
+        finalUnitId = null;
+        getBootstrapInstance(bootstrap.Modal, finalUnitModal).hide();
+        updateForm(itemId, 'cancel_final_unit');
+        submitForm();
+    });
+}
+
+document.addEventListener('click', function(event) {
+    const button = event.target.closest('[data-basket-action]');
+    if (!button || button.disabled) {
+        return;
+    }
+    pendingRowFocus = button;
+    button.disabled = true;
+    updateForm(button.dataset.itemId, button.dataset.basketAction);
+    submitForm();
+});
 
 function showBasketBoughtModal(buyerDisplayName, itemCount) {
     const modalElement = document.getElementById('basketBoughtModal');
@@ -379,12 +553,57 @@ function showBasketBoughtModal(buyerDisplayName, itemCount) {
     }
     const itemWord = itemCount === 1 ? 'item' : 'items';
     modalBody.textContent = `${buyerDisplayName} bought ${itemCount} ${itemWord}.`; // eslint-disable-line
-    bootstrap.Modal.getOrCreateInstance(modalElement).show();
+    getBootstrapInstance(bootstrap.Modal, modalElement).show();
+}
+
+// Updates (or hides) a product catalogue row's "On list" indicator.
+// No-ops on pages without a product catalogue, or for a product not
+// currently rendered on this page (e.g. filtered out).
+function updateProductListStatus(productId, onListQuantity) {
+    const row = document.querySelector(
+        `.product-row[data-product-id='${productId}']`
+    );
+    if (!row) {
+        return;
+    }
+    const badge = row.querySelector('.on-list-badge');
+    const quantityEl = row.querySelector('.on-list-quantity');
+    if (!badge || !quantityEl) {
+        return;
+    }
+    if (onListQuantity) {
+        quantityEl.textContent = onListQuantity;
+        badge.classList.remove('d-none');
+    } else {
+        quantityEl.textContent = '';
+        badge.classList.add('d-none');
+    }
+}
+
+// Tracks whether the "list complete" suggestion has already been shown
+// (from the initial render or a WebSocket event) during this page view,
+// so a further broadcast for the same list doesn't reopen it.
+let listCompleteModalHandled = false;
+
+function showListCompleteModal() {
+    const modalEl = document.getElementById('listCompleteModal');
+    if (!modalEl || listCompleteModalHandled) {
+        return;
+    }
+    listCompleteModalHandled = true;
+    getBootstrapInstance(bootstrap.Modal, modalEl).show();
 }
 
 // WebSocket setup
 {% if request.family %}
-const currentUsername = "{{ request.user.username|escapejs }}";
+const currentUserId = {{ request.user.pk }};
+{% t 'shopping_list.action_rejected' as attr_rejected %}
+const I18N = {
+    'shopping_list.action_rejected': "{{ attr_rejected|escapejs }}",
+};
+// Only meaningful on the shopping-list page itself; null elsewhere, so
+// shopping_list_complete/replaced events are ignored on other pages.
+const currentOpenListId = {{ open_list.id|default:"null" }};
 const wsProt = window.location.protocol === "https:" ? "wss" : "ws";
 const wsUrl = `${wsProt}://${window.location.host}/ws/families/{{ request.family.slug }}/shopping-list/`; // noqa
 const socket = new WebSocket(wsUrl);
@@ -396,74 +615,42 @@ socket.onmessage = function(event) {
     if (data.type === 'basket_bought') {
         // The person who bought the items already sees the result of
         // their own action; only notify everyone else.
-        if (data.buyer_username !== currentUsername) {
+        if (data.buyer_user_id !== currentUserId) {
             showBasketBoughtModal(data.buyer_display_name, data.item_count);
         }
         return;
     }
 
-    const listItemId = String(data.list_item_id);
-    const inBasket = data.in_basket;
-    const cancelled = data.cancelled;
-
-    // Find the item in the DOM and update it
-    const checkbox = document.querySelector(
-        `.list-group-item input[value='${listItemId}']`
-    );
-    const listItem = checkbox ? checkbox.closest('.list-group-item') : null;
-
-    if (data.bought) {
-        moveItemToBoughtSection(listItem, listItemId, data);
+    if (data.type === 'product_list_status') {
+        updateProductListStatus(data.product_id, data.on_list_quantity);
+        // Quantity changes include deletion, whose unit no longer has a
+        // row to update. Refresh from persisted state on every client.
+        refreshShoppingListRows();
         return;
     }
 
-    // Add a console error in case the record for some reason doesn't exist!
-    if (!listItem) {
-        console.error(`List item with ID ${listItemId} not found`);
-        return;
-    }
-    const productText = listItem.querySelector('span');
-    const cancelChkbx = listItem.querySelector('.cancel-chkbx');
-    const completedChkbx = listItem.querySelector('.completed-chkbx');
-
-    if (cancelled) {
-        productText.classList.remove('bold-text');
-        productText.classList.add('text-muted');
-        completedChkbx.disabled = true;
-        cancelChkbx.checked = true;
-    } else {
-        productText.classList.remove('text-muted');
-        productText.classList.add('bold-text');
-        completedChkbx.disabled = false;
-        cancelChkbx.checked = false;
-    }
-    // Keeps the cancelled-items visibility toggle working after a live
-    // (non-reload) cancel/uncancel update.
-    listItem.classList.toggle('cancelled-list-item', cancelled);
-
-    if (inBasket) {
-        productText.classList.add('in-basket-text');
-        cancelChkbx.disabled = true;
-        completedChkbx.checked = true;
-        // Only the person who put it in their basket may take it back
-        // out; the server enforces this too, this is just a convenience.
-        // (Cancelled items are already force-disabled above regardless
-        // of ownership, so this must not override that.)
-        if (!cancelled) {
-            completedChkbx.disabled = (data.user !== currentUsername);
+    if (data.type === 'shopping_list_complete') {
+        if (data.shopping_list_id === currentOpenListId) {
+            showListCompleteModal();
         }
-    } else {
-        productText.classList.remove('in-basket-text');
-        cancelChkbx.disabled = false;
-        completedChkbx.checked = false;
+        return;
     }
-    // this is an improvisation to deal with a rather problematic issue in the html.
-    // It removes the text 'bold-text' from the class if that class also contains 'in-basket-text'.
-    // Not pretty, but necessary given the time constraints.
-    if (productText.classList.contains('bold-text') && productText.classList.contains('in-basket-text')) {
-        productText.classList.remove('bold-text');
+
+    if (data.type === 'shopping_list_replaced') {
+        // The list this page is showing has just been closed out and
+        // replaced; reload to show the new one rather than trying to
+        // patch in what could be a whole new/carried-forward item set.
+        if (data.closed_list_id === currentOpenListId) {
+            window.location.reload();
+        }
+        return;
+    }
+
+    if (data.type === 'list_item_added' || data.type === 'list_item_update') {
+        refreshShoppingListRows();
     }
 };
+
 
 socket.onerror = function(error) {
     console.error('A WebSocket error has occurred: ', error);

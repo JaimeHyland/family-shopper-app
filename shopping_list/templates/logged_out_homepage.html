@@ -10,24 +10,8 @@
 
 <div class="container">
     <h1>Family Shopping List</h1>
-    <p>Already have an account? <a href="{% url 'account_login' %}">Log in</a>.</p>
-
-    <h3>Register your family</h3>
-    <p>Enter your family's name and your email address. We'll email you a link to finish setting up your account as that family's admin.</p> {# noqa #}
-    <form method="post" action="{% url 'logged_out_homepage' %}">
-        {% csrf_token %}
-        {{ form.non_field_errors }}
-        <div class="mb-3">
-            <label for="{{ form.family_name.id_for_label }}" class="form-label">Family name</label> {# noqa #}
-            {{ form.family_name }}
-            {{ form.family_name.errors }}
-        </div>
-        <div class="mb-3">
-            <label for="{{ form.email.id_for_label }}" class="form-label">Email address</label> {# noqa #}
-            {{ form.email }}
-            {{ form.email.errors }}
-        </div>
-        <button type="submit" class="btn btn-primary">Register my family</button>
-    </form>
+    <p>Welcome! What would you like to do?</p>
+    <a href="{% url 'registration_start' %}" class="btn btn-primary">I'm new here</a>
+    <a href="{% url 'account_login' %}{% if request.GET.next %}?next={{ request.GET.next|urlencode }}{% endif %}" class="btn btn-secondary">I already have an account</a> {# noqa #}
 </div>
 {% endblock %}

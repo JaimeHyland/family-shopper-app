@@ -60,6 +60,20 @@ INSTALLED_APPS = [
 
 LOGIN_URL = 'logged_out_homepage'
 
+# ModelBackend is tried first and handles two cases unaffected by the
+# email-based ACCOUNT_AUTHENTICATION_METHOD below: Django admin login,
+# and shopping_list.family_login_views.FamilyLoginView's direct call to
+# authenticate() with the member's own Django username (resolved by
+# family-local display name, not touching allauth's own login form
+# at all). allauth's own backend is additionally required for its
+# /accounts/login/ page to be able to authenticate by email instead of
+# username -- without it, Django's ModelBackend alone cannot do so (it
+# only ever looks up by the username field).
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
+    'allauth.account.auth_backends.AuthenticationBackend',
+]
+
 # Required by django-allauth
 SITE_ID = 1
 # 'shopping_list' now requires a family_slug, so post-login routing
@@ -71,12 +85,14 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.locale.LocaleMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'allauth.account.middleware.AccountMiddleware',
+    'shopping_list.middleware.ForcePasswordChangeMiddleware',
 ]
 
 ROOT_URLCONF = 'family_shopping_list.urls'
@@ -156,9 +172,55 @@ AUTH_PASSWORD_VALIDATORS = [
 # verified-email flow instead; ordinary/managed members are unaffected and
 # may still have no email address at all.)
 ACCOUNT_EMAIL_VERIFICATION = 'none'
-# Keeps username/password login working as-is; login is not made ambiguous
-# or email-based. New Family admins log in the same way, via username.
 ACCOUNT_ADAPTER = 'shopping_list.adapters.NoPublicSignupAccountAdapter'
+# "Option A" accounts (solo users, Family admins, email-invited members)
+# have an internal, randomly-generated Django username (see
+# shopping_list.registration.generate_internal_username) -- never shown
+# to or chosen by anyone -- so allauth's standard /accounts/login/ page
+# must authenticate by email instead of username, or it would be
+# unusable. No-email members are unaffected: they never use this page at
+# all, authenticating instead via their family-local display name (see
+# shopping_list.family_login_views.FamilyLoginView), which calls Django's
+# authenticate() directly regardless of this setting. (This installed
+# allauth version predates ACCOUNT_LOGIN_METHODS; it still uses the
+# older, singular ACCOUNT_AUTHENTICATION_METHOD/ACCOUNT_EMAIL_REQUIRED
+# settings instead.)
+ACCOUNT_AUTHENTICATION_METHOD = "email"
+ACCOUNT_EMAIL_REQUIRED = True
+# Enforces "a User account has a globally unique email address" (one
+# persistent identity, not a freely-growing list of addresses): without
+# this, allauth's own /accounts/email/ page lets an account accumulate
+# multiple EmailAddress rows. This switches it to a single
+# change-to/replace flow instead -- matching the nav bar's existing
+# "Change Email" label, which already anticipated this. The database
+# backstop (allauth's EmailAddress.unique_verified_email constraint)
+# already prevents two different accounts from both holding the same
+# verified email regardless of this setting.
+ACCOUNT_CHANGE_EMAIL = True
+# Reuses allauth's own rate-limiting infrastructure (same mechanism
+# protecting its standard /accounts/login/) for the per-family
+# display-name login door (see shopping_list.family_login_views). Limits
+# both overall attempts from one IP and repeated attempts against one
+# specific (family, display name) target, regardless of which family it
+# belongs to or whether that display name actually exists there.
+ACCOUNT_RATE_LIMITS = {
+    "family_login_failed": "10/m/ip,5/5m/key",
+}
+
+# Which seed-list JSON dataset (see shopping_list.seed_lists -- the
+# key here is the filename stem under shopping_list/seed_data/) a
+# member sees pre-selected the first time they visit the seed-list
+# page, based on the kind of family they belong to. Deliberately kept
+# as plain, separate configuration: the JSON dataset files carry no
+# notion of who should default to them, and nothing in the selection
+# code itself needs to change to point either user type at a different
+# dataset -- only this mapping. Only "solo"/"family" are used today;
+# the key could later become a tuple such as (user_type, locale)
+# without changing the lookup function's shape.
+DEFAULT_SEED_LIST_BY_USER_TYPE = {
+    "solo": "irish_student_essentials",
+    "family": "irish_family_small_children",
+}
 
 # Email
 # https://docs.djangoproject.com/en/5.1/topics/email/
@@ -181,6 +243,18 @@ DEFAULT_FROM_EMAIL = os.environ.get(
 # https://docs.djangoproject.com/en/5.1/topics/i18n/
 
 LANGUAGE_CODE = 'en-us'
+
+# Restricts Django's own request-language detection (Accept-Language
+# header, session, cookie - via LocaleMiddleware below) to the languages
+# the app actually has translations for. The translated strings
+# themselves live in per-app translations/<lang>.json catalogs (see
+# shopping_list/templatetags/i18n_json.py), not Django's gettext/.po/.mo
+# catalogs - this setting only governs which language gets selected.
+LANGUAGES = [
+    ('en', 'English'),
+    ('de', 'German'),
+    ('es', 'Spanish'),
+]
 
 TIME_ZONE = 'UTC'
 

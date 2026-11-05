@@ -362,6 +362,56 @@ daphne family_shopping_list.asgi:application
 However, one issue that should be noted with this method of running the app is that it doesn't seem to check whether all migrations have been applied on startup, while the runserver-based command would give you a warning if you hadn't completed your migrations! For this reason, when using Daphne, it's particularly important to remember to migrate any changes in your models (or in Django's standard models) before deploying!
 
 
+### Reusable shopping-list starters
+
+After completing verified registration and account setup, users can choose a
+shopping-list starter or go straight to their shopping list. Existing family
+members can return using **Use a seed list** beside **Add items**.
+
+The three English-only JSON templates in [shopping_list/seed_data](shopping_list/seed_data)
+are Irish student essentials (47 products), Irish family with two small children
+(59 products), and Everyday groceries for an older Irish couple (51 products).
+Each contains Vegetables, Fruit, Bread and Bakery, Dairy and Eggs, Meat and Fish,
+Cupboard Staples, Frozen Food, Snacks, Tea, Coffee and Drinks, and Household
+Essentials. They are illustrative starting points, not prescribed diets.
+
+Choose a template, select products globally, by category or individually, and
+review the selection. **Edit selection** returns to the same checked products;
+**Add selected products** adds one ordinary unit per selected name. Empty
+selections add nothing. Checkbox group controls require JavaScript; individual
+selection and the review/import forms also work without it.
+
+Imports never replace a list. Duplicate detection uses **exact, case-sensitive
+product names within the family's open list**, including purchased, cancelled
+and in-basket units. Existing quantities, attribution and ownership are not
+changed. `Potatoes` and `Potatoes, floury` (also `Milk` and `milk`) are different
+names. Closed-list items do not prevent replenishing a new open list.
+
+Catalogue resolution stays within the family. For several exact-name catalogue
+records, an active record is preferred, then the lowest ID; an inactive-only
+match is reused without reactivating it. Existing categories and default shops
+are preserved. Missing categories reuse a case-insensitive category-name match
+(active first, then lowest ID) or are created for the selected seed products.
+The narrowly scoped importer can create only names supplied by the server's
+JSON files. Ordinary members gain no general catalogue-management permissions;
+existing catalogue forms retain their case-insensitive validation.
+
+New items use the existing lifecycle, per-unit model and after-commit WebSocket
+notifications. Imports lock the family just like normal adds and list closure.
+No migrations or additional dependencies are required.
+
+To add another template, add a JSON file with a `name` and a `categories` array.
+Each category has a `name` and a nonempty `products` string array. Product names
+must be unique within the template; the filename stem identifies the template
+in the selection form. Restarting or migration is not needed to load new data.
+
+Focused tests (Django uses its separate PostgreSQL test database):
+
+```text
+python manage.py test shopping_list.tests_seed_lists shopping_list.tests_registration --keepdb --noinput
+node --test shopping_list/tests_seed_selection.js
+```
+
 <!-- TOC --><a name="bug-fixes-linting-testing-and-ux-feedback"></a>
 ## Bug fixes, linting, testing and UX feedback
 
