@@ -14,6 +14,8 @@ from pathlib import Path
 import os
 import sys
 
+import certifi
+
 import dj_database_url
 from dotenv import load_dotenv
 
@@ -167,42 +169,19 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-# Required by django-allauth: no verification of account by e-mail required.
-# (Family-admin public self-registration uses its own dedicated,
-# verified-email flow instead; ordinary/managed members are unaffected and
-# may still have no email address at all.)
+if DEBUG:
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+
+# Verification of email addresses for django-allauth accounts is disabled.
+# Verification handled by our own custom flow.
 ACCOUNT_EMAIL_VERIFICATION = 'none'
 ACCOUNT_ADAPTER = 'shopping_list.adapters.NoPublicSignupAccountAdapter'
-# "Option A" accounts (solo users, Family admins, email-invited members)
-# have an internal, randomly-generated Django username (see
-# shopping_list.registration.generate_internal_username) -- never shown
-# to or chosen by anyone -- so allauth's standard /accounts/login/ page
-# must authenticate by email instead of username, or it would be
-# unusable. No-email members are unaffected: they never use this page at
-# all, authenticating instead via their family-local display name (see
-# shopping_list.family_login_views.FamilyLoginView), which calls Django's
-# authenticate() directly regardless of this setting. (This installed
-# allauth version predates ACCOUNT_LOGIN_METHODS; it still uses the
-# older, singular ACCOUNT_AUTHENTICATION_METHOD/ACCOUNT_EMAIL_REQUIRED
-# settings instead.)
+# Usernames are internal; ordinary accounts log in by email.
 ACCOUNT_AUTHENTICATION_METHOD = "email"
 ACCOUNT_EMAIL_REQUIRED = True
 # Enforces "a User account has a globally unique email address" (one
-# persistent identity, not a freely-growing list of addresses): without
-# this, allauth's own /accounts/email/ page lets an account accumulate
-# multiple EmailAddress rows. This switches it to a single
-# change-to/replace flow instead -- matching the nav bar's existing
-# "Change Email" label, which already anticipated this. The database
-# backstop (allauth's EmailAddress.unique_verified_email constraint)
-# already prevents two different accounts from both holding the same
-# verified email regardless of this setting.
+# persistent identity).
 ACCOUNT_CHANGE_EMAIL = True
-# Reuses allauth's own rate-limiting infrastructure (same mechanism
-# protecting its standard /accounts/login/) for the per-family
-# display-name login door (see shopping_list.family_login_views). Limits
-# both overall attempts from one IP and repeated attempts against one
-# specific (family, display name) target, regardless of which family it
-# belongs to or whether that display name actually exists there.
 ACCOUNT_RATE_LIMITS = {
     "family_login_failed": "10/m/ip,5/5m/key",
 }
@@ -230,12 +209,13 @@ EMAIL_BACKEND = os.environ.get(
     else "django.core.mail.backends.smtp.EmailBackend",
 )
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
-EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "465"))
 EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
-EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "True").strip().lower() == "true" # noqa
+EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "False").lower() == "true"
+EMAIL_USE_SSL = os.environ.get("EMAIL_USE_SSL", "True").lower() == "true"
 DEFAULT_FROM_EMAIL = os.environ.get(
-    "DEFAULT_FROM_EMAIL", "webmaster@localhost",
+    "DEFAULT_FROM_EMAIL", "info@language-landscapes.com",
 )
 
 
