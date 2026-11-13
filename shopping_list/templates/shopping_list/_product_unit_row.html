@@ -1,0 +1,54 @@
+{% load i18n_json %}
+{% t "shopping_list.status.unknown_member" as unknown_member %}
+<li class="list-group-item d-flex flex-wrap align-items-center gap-2 product-unit-row item-state-{{ item.state }}{% if item.all_cancelled %} cancelled-list-item{% endif %}{% if item.bought_only %} bought-only-list-item{% endif %}"
+    data-item-id="{{ item.id }}" data-product-id="{{ item.product_id }}" data-unit-ids="{{ item.unit_ids|join:' ' }}" data-state="{{ item.state }}">
+  <span class="item-text flex-grow-1">
+    <a class="custom-link product-name-style"
+       href="{% if item.detail_slug %}{% url 'list_item' family_slug=item.family.slug slug=item.detail_slug %}{% else %}{% url 'product_detail' family_slug=item.family.slug slug=item.product.slug %}{% endif %}">{{ item.product.product_name }}</a>
+    <span class="unit-status-details badge bg-light text-dark text-wrap text-break text-start ms-2">
+      {% t "shopping_list.status.total" %}: <span class="unit-total-quantity">{{ item.unit_count }}</span>
+      <span class="d-block fw-normal mt-1">
+        {% t "shopping_list.status.unassigned" %}: <span class="unit-unassigned-quantity">{{ item.unassigned_count }}</span>
+        &middot; {% t "shopping_list.status.in_basket" %}: <span class="unit-basket-quantity">{{ item.basket_count }}</span>
+        &middot; {% t "shopping_list.status.bought" %}: <span class="unit-bought-quantity">{{ item.bought_count }}</span>
+        {% if item.cancelled_count %}&middot; {% t "shopping_list.cancelled_heading" %}: {{ item.cancelled_count }}{% endif %}
+      </span>
+      {% if item.basket_groups or item.bought_groups or item.cancelled_groups %}
+      <span class="d-block fw-normal mt-1">
+        {% for group in item.basket_groups %}
+        <span class="d-inline-block me-2">{% t "shopping_list.attr.in_basket" name=group.owner_name|default:unknown_member %}: {{ group.unit_count }}</span>
+        {% endfor %}
+        {% for group in item.bought_groups %}
+        <span class="d-inline-block me-2">{% t "shopping_list.attr.bought" name=group.buyer_name|default:unknown_member %}: {{ group.unit_count }}</span>
+        {% endfor %}
+        {% for group in item.cancelled_groups %}
+          {% if group.cancelled_by_name %}<span class="d-inline-block me-2">{% t "shopping_list.attr.cancelled" name=group.cancelled_by_name %}: {{ group.unit_count }}</span>{% endif %}
+        {% endfor %}
+      </span>
+      {% endif %}
+      {% if item.restored_by_name %}
+      <span class="d-block fw-normal mt-1">{% t "shopping_list.attr.restored" name=item.restored_by_name %}</span>
+      {% endif %}
+    </span>
+  </span>
+  {% if not item.bought_only %}
+  <div class="basket-controls d-flex gap-1 ms-auto flex-shrink-0">
+    <span class="unit-control" title="{% t 'shopping_list.add_unit' %}" {% if not item.add_unit_id %}tabindex="0" role="button" aria-disabled="true" aria-label="{{ item.product.product_name }}: {% t 'shopping_list.add_unit' %}"{% endif %}>
+      <button type="button" class="btn btn-outline-primary basket-plus" data-basket-action="add_unit" data-item-id="{{ item.add_unit_id|default_if_none:item.id }}"
+        {% if not item.add_unit_id %}disabled aria-disabled="true"{% endif %} title="{% t 'shopping_list.add_unit' %}" aria-label="{{ item.product.product_name }}: {% t 'shopping_list.add_unit' %}">+</button>
+    </span>
+    <span class="unit-control" title="{% t 'shopping_list.remove_unit' %}" {% if not item.remove_unit_id %}tabindex="0" role="button" aria-disabled="true" aria-label="{{ item.product.product_name }}: {% t 'shopping_list.remove_unit' %}"{% endif %}>
+      <button type="button" class="btn btn-outline-secondary basket-minus" data-basket-action="remove_unit" data-item-id="{{ item.remove_unit_id|default_if_none:item.id }}"
+        {% if not item.remove_unit_id %}disabled aria-disabled="true"{% endif %} title="{% t 'shopping_list.remove_unit' %}" aria-label="{{ item.product.product_name }}: {% t 'shopping_list.remove_unit' %}">&minus;</button>
+    </span>
+    <span class="unit-control" title="{% t 'shopping_list.put_unit_in_basket' %}" {% if not item.put_in_basket_id %}tabindex="0" role="button" aria-disabled="true" aria-label="{{ item.product.product_name }}: {% t 'shopping_list.put_unit_in_basket' %}"{% endif %}>
+      <button type="button" class="btn btn-outline-success basket-down" data-basket-action="add_to_basket" data-item-id="{{ item.put_in_basket_id|default_if_none:item.id }}"
+        {% if not item.put_in_basket_id %}disabled aria-disabled="true"{% endif %} title="{% t 'shopping_list.put_unit_in_basket' %}" aria-label="{{ item.product.product_name }}: {% t 'shopping_list.put_unit_in_basket' %}">&#8595;</button>
+    </span>
+    <span class="unit-control" title="{% t 'shopping_list.return_unit' %}" {% if not item.return_unit_id %}tabindex="0" role="button" aria-disabled="true" aria-label="{{ item.product.product_name }}: {% t 'shopping_list.return_unit' %}"{% endif %}>
+      <button type="button" class="btn btn-outline-secondary basket-return" data-basket-action="remove_from_basket" data-item-id="{{ item.return_unit_id|default_if_none:item.id }}"
+        {% if not item.return_unit_id %}disabled aria-disabled="true"{% endif %} title="{% t 'shopping_list.return_unit' %}" aria-label="{{ item.product.product_name }}: {% t 'shopping_list.return_unit' %}">&#8625;</button>
+    </span>
+  </div>
+  {% endif %}
+</li>

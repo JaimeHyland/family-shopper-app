@@ -73,6 +73,14 @@ span.in-basket-text a {
     display: none !important;
 }
 
+#shopping_list.hide-bought .bought-only-list-item {
+    display: none !important;
+}
+
+.product-unit-row .item-text {
+    min-width: 0;
+}
+
 .nav-link.active {
     font-weight: bold;
     color: #007bff;

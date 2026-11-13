@@ -5,17 +5,17 @@
                 {% for sub_label, sub_items in group.subgroups %}
                             <li class="list-group-item ps-4 fst-italic text-muted" data-group-heading="secondary">{{ sub_label }}</li>
                 {% for item in sub_items %}
-                  {% include "shopping_list/_list_item_row.html" %}
+                  {% include "shopping_list/_product_unit_row.html" %}
                 {% endfor %}
                 {% endfor %}
               {% else %}
                 {% for item in group.items %}
-                  {% include "shopping_list/_list_item_row.html" %}
+                  {% include "shopping_list/_product_unit_row.html" %}
                 {% endfor %}
               {% endif %}
               {% endfor %}
             {% else %}
               {% for item in shopping_list %}
-                {% include "shopping_list/_list_item_row.html" %}
+                {% include "shopping_list/_product_unit_row.html" %}
               {% endfor %}
             {% endif %}

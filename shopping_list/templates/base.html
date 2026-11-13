@@ -355,6 +355,16 @@ function toggleCancelledVisibility() {
     syncGroupHeadingVisibility();
 }
 
+function toggleBoughtVisibility() {
+    const list = document.getElementById('shopping_list');
+    const toggle = document.getElementById('bought-toggle');
+    if (!list || !toggle) {
+        return;
+    }
+    list.classList.toggle('hide-bought', !toggle.checked);
+    syncGroupHeadingVisibility();
+}
+
 // A category/shop heading (and, for combined groupings, its secondary
 // shop/category sub-heading) must not stay visible once every row under
 // it is hidden - e.g. cancelling a category's last visible item, or the
@@ -368,8 +378,10 @@ function syncGroupHeadingVisibility() {
         return;
     }
     const hideCancelled = list.classList.contains('hide-cancelled');
+    const hideBought = list.classList.contains('hide-bought');
     const isRowVisible = row => (
         !(hideCancelled && row.classList.contains('cancelled-list-item'))
+        && !(hideBought && row.classList.contains('bought-only-list-item'))
     );
 
     let primaryHeading = null;
@@ -410,31 +422,14 @@ function syncGroupHeadingVisibility() {
     closePrimary();
 }
 
-// Keeps the visibility filter in sync with Bootstrap's collapse state.
+// Both visibility filters operate on the consolidated product rows.
 document.addEventListener('DOMContentLoaded', function() {
     const boughtToggle = document.getElementById('bought-toggle');
-    const boughtSection = document.getElementById('bought-section');
-    if (!boughtToggle || !boughtSection) {
-        return;
+    if (boughtToggle) {
+        boughtToggle.addEventListener('change', toggleBoughtVisibility);
     }
-
-    const collapse = getBootstrapInstance(
-        bootstrap.Collapse, boughtSection, {toggle: false}
-    );
-    const syncBoughtToggle = function() {
-        boughtToggle.checked = boughtSection.classList.contains('show');
-    };
-    boughtToggle.addEventListener('change', function() {
-        if (boughtToggle.checked) {
-            collapse.show();
-        } else {
-            collapse.hide();
-        }
-    });
-    syncBoughtToggle();
+    toggleBoughtVisibility();
     toggleCancelledVisibility();
-    boughtSection.addEventListener('shown.bs.collapse', syncBoughtToggle);
-    boughtSection.addEventListener('hidden.bs.collapse', syncBoughtToggle);
 });
 
 // All quantities, attribution, filters and per-viewer permissions come
@@ -480,13 +475,12 @@ async function refreshShoppingListRows() {
                 ? `[data-basket-action="${focusSource.dataset.basketAction}"]` : null;
             list.innerHTML = data.rows_html;
             syncGroupHeadingVisibility();
-            document.getElementById('bought-items-list').innerHTML = data.bought_html;
             document.getElementById('bought-count').textContent = data.bought_count;
             document.getElementById('buy-my-basket-btn').disabled = !data.has_basket_items;
             if (itemId) {
                 const row = list.querySelector(`[data-unit-ids~="${itemId}"]`)
                     || (sourceRow && list.querySelector(
-                        `[data-product-id="${sourceRow.dataset.productId}"][data-state="${sourceRow.dataset.state}"]`
+                        `[data-product-id="${sourceRow.dataset.productId}"]`
                     ));
                 const control = row && (
                     (controlSelector && row.querySelector(`${controlSelector}:not(:disabled)`))
@@ -556,26 +550,24 @@ function showBasketBoughtModal(buyerDisplayName, itemCount) {
     getBootstrapInstance(bootstrap.Modal, modalElement).show();
 }
 
-// Updates (or hides) a product catalogue row's "On list" indicator.
+// Updates (or hides) a product catalogue row's quantity breakdown.
 // No-ops on pages without a product catalogue, or for a product not
 // currently rendered on this page (e.g. filtered out).
-function updateProductListStatus(productId, onListQuantity) {
+function updateProductListStatus(data) {
     const row = document.querySelector(
-        `.product-row[data-product-id='${productId}']`
+        `.product-row[data-product-id='${data.product_id}']`
     );
     if (!row) {
         return;
     }
     const badge = row.querySelector('.on-list-badge');
-    const quantityEl = row.querySelector('.on-list-quantity');
-    if (!badge || !quantityEl) {
-        return;
-    }
-    if (onListQuantity) {
-        quantityEl.textContent = onListQuantity;
+    row.querySelector('.on-list-quantity').textContent = data.list_total_quantity;
+    row.querySelector('.on-list-unbasketed-quantity').textContent = data.list_unbasketed_quantity; // eslint-disable-line
+    row.querySelector('.on-list-basket-quantity').textContent = data.list_basket_quantity; // eslint-disable-line
+    row.querySelector('.on-list-bought-quantity').textContent = data.list_bought_quantity; // eslint-disable-line
+    if (data.list_total_quantity) {
         badge.classList.remove('d-none');
     } else {
-        quantityEl.textContent = '';
         badge.classList.add('d-none');
     }
 }
@@ -622,7 +614,7 @@ socket.onmessage = function(event) {
     }
 
     if (data.type === 'product_list_status') {
-        updateProductListStatus(data.product_id, data.on_list_quantity);
+        updateProductListStatus(data);
         // Quantity changes include deletion, whose unit no longer has a
         // row to update. Refresh from persisted state on every client.
         refreshShoppingListRows();

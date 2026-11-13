@@ -4,7 +4,14 @@
     <input type="hidden" name="selected-products" value="{{ product.id }}">
     <button type="submit" class="btn btn-link text-decoration-none text-reset product-add-btn w-100 text-start d-flex justify-content-between align-items-center px-3 py-2" title="Add to shopping list">
       <span class="product-name-text">{{ product.product_name }}</span>
-      <span class="on-list-badge badge text-bg-light ms-2{% if not product.on_list_quantity %} d-none{% endif %}">On list &middot; <span class="on-list-quantity">{{ product.on_list_quantity|default_if_none:"" }}</span></span>
+      <span class="on-list-badge badge bg-light text-dark text-wrap text-start ms-2{% if not product.list_total_quantity %} d-none{% endif %}">
+        Total on list: <span class="on-list-quantity">{{ product.list_total_quantity }}</span>
+        <span class="d-block fw-normal mt-1">
+          On the list: <span class="on-list-unbasketed-quantity">{{ product.list_unbasketed_quantity }}</span>
+          &middot; In a basket: <span class="on-list-basket-quantity">{{ product.list_basket_quantity }}</span>
+          &middot; Bought: <span class="on-list-bought-quantity">{{ product.list_bought_quantity }}</span>
+        </span>
+      </span>
     </button>
   </form>
   <a href="{% url 'product_detail' family_slug=request.family.slug slug=product.slug %}" class="product-info-link px-3 py-2" aria-label="View details for {{ product.product_name }}" title="Product details">

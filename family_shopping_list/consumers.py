@@ -80,6 +80,10 @@ class ShoppingConsumer(AsyncWebsocketConsumer):
             'type': 'product_list_status',
             'product_id': event['product_id'],
             'on_list_quantity': event['on_list_quantity'],
+            'list_total_quantity': event['list_total_quantity'],
+            'list_unbasketed_quantity': event['list_unbasketed_quantity'],
+            'list_basket_quantity': event['list_basket_quantity'],
+            'list_bought_quantity': event['list_bought_quantity'],
             'user': event['user'],
         }))
 
@@ -116,4 +120,3 @@ class ShoppingConsumer(AsyncWebsocketConsumer):
             .values_list("family_id", flat=True)
             .first()
         )
-
