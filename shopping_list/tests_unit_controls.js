@@ -11,11 +11,58 @@ function compatibilitySource() {
         template.indexOf('function submitForm()'));
 }
 
+test('product quantity breakdown updates live and hides only when total is zero', () => {
+    const template = readFileSync(join(__dirname, 'templates/base.html'), 'utf8');
+    const source = template.slice(
+        template.indexOf('function updateProductListStatus('),
+        template.indexOf('// Tracks whether the "list complete"'),
+    );
+    const hidden = new Set(['d-none']);
+    const elements = Object.fromEntries([
+        '.on-list-quantity', '.on-list-unbasketed-quantity',
+        '.on-list-basket-quantity', '.on-list-bought-quantity',
+    ].map(selector => [selector, {textContent: ''}]));
+    elements['.on-list-badge'] = {
+        classList: {
+            add: name => hidden.add(name),
+            remove: name => hidden.delete(name),
+        },
+    };
+    let rendered = true;
+    const context = vm.createContext({
+        document: {
+            querySelector: selector => {
+                assert.equal(selector, ".product-row[data-product-id='7']");
+                return rendered ? {
+                    querySelector: name => elements[name],
+                } : null;
+            },
+        },
+    });
+    vm.runInContext(source, context);
+    for (const [total, unbasketed, basket, bought] of [
+        [3, 1, 2, 0], [3, 1, 1, 1], [3, 0, 0, 3], [0, 0, 0, 0],
+    ]) {
+        context.updateProductListStatus({
+            product_id: 7, list_total_quantity: total,
+            list_unbasketed_quantity: unbasketed,
+            list_basket_quantity: basket, list_bought_quantity: bought,
+        });
+        assert.equal(elements['.on-list-quantity'].textContent, total);
+        assert.equal(elements['.on-list-unbasketed-quantity'].textContent, unbasketed);
+        assert.equal(elements['.on-list-basket-quantity'].textContent, basket);
+        assert.equal(elements['.on-list-bought-quantity'].textContent, bought);
+        assert.equal(hidden.has('d-none'), total === 0);
+    }
+    rendered = false;
+    assert.doesNotThrow(() => context.updateProductListStatus({product_id: 7}));
+});
+
 test('empty category/shop headings are hidden once every row beneath them is hidden', () => {
     const template = readFileSync(join(__dirname, 'templates/base.html'), 'utf8');
     const source = template.slice(
         template.indexOf('function toggleCancelledVisibility'),
-        template.indexOf('// Keeps the visibility filter'),
+        template.indexOf('// Both visibility filters'),
     );
 
     function makeClassList(initial = []) {
@@ -30,7 +77,7 @@ test('empty category/shop headings are hidden once every row beneath them is hid
 
     function makeList(rows) {
         return {
-            classList: makeClassList(['hide-cancelled']),
+            classList: makeClassList(['hide-cancelled', 'hide-bought']),
             children: rows.map(row => ({
                 dataset: row.heading ? {groupHeading: row.heading} : {},
                 classList: makeClassList(row.classes || []),
@@ -38,12 +85,13 @@ test('empty category/shop headings are hidden once every row beneath them is hid
         };
     }
 
-    let list, toggle;
+    let list, toggle, boughtToggle;
     const context = vm.createContext({
         document: {
             getElementById: id => (
                 id === 'shopping_list' ? list
-                    : id === 'cancelled-toggle' ? toggle : null
+                    : id === 'cancelled-toggle' ? toggle
+                        : id === 'bought-toggle' ? boughtToggle : null
             ),
         },
     });
@@ -77,6 +125,18 @@ test('empty category/shop headings are hidden once every row beneath them is hid
     assert.equal(list.children[0].classList.contains('d-none'), false);
     assert.equal(list.children[1].classList.contains('d-none'), true);
     assert.equal(list.children[3].classList.contains('d-none'), false);
+
+    list = makeList([
+        {heading: 'primary'}, {classes: ['bought-only-list-item']},
+        {heading: 'primary'}, {classes: []},
+    ]);
+    boughtToggle = {checked: false};
+    context.toggleBoughtVisibility();
+    assert.equal(list.children[0].classList.contains('d-none'), true);
+    assert.equal(list.children[2].classList.contains('d-none'), false);
+    boughtToggle.checked = true;
+    context.toggleBoughtVisibility();
+    assert.equal(list.children[0].classList.contains('d-none'), false);
 });
 
 test('Bootstrap 5.0.1 components reuse instances and preserve options', () => {
@@ -103,58 +163,102 @@ test('Bootstrap 5.0.1 components reuse instances and preserve options', () => {
     assert.doesNotMatch(template, /\.getOrCreateInstance\(/);
 });
 
-test('bought filter initializes without toggling and follows collapse events', () => {
+test('bought filter toggles fully bought rows without a separate collapse', () => {
     const template = readFileSync(join(__dirname, 'templates/base.html'), 'utf8');
-    const source = template.slice(template.indexOf('// Keeps the visibility filter'),
+    const source = template.slice(template.indexOf('// Both visibility filters'),
         template.indexOf('// All quantities, attribution'));
-    const events = {}, sectionEvents = {};
-    const toggle = {checked: true, addEventListener: (name, fn) => { events[name] = fn; }};
-    let shown = false, constructions = 0, visibilitySyncs = 0;
-    const section = {
-        classList: {contains: name => name === 'show' && shown},
-        addEventListener: (name, fn) => { sectionEvents[name] = fn; },
-    };
-    let instance;
-    class Collapse {
-        static getInstance(element) { return element === section ? instance : null; }
-        constructor(element, options) {
-            assert.equal(element, section);
-            assert.equal(options.toggle, false);
-            constructions++;
-            instance = this;
-        }
-        show() { shown = true; sectionEvents['shown.bs.collapse'](); }
-        hide() { shown = false; sectionEvents['hidden.bs.collapse'](); }
-    }
+    const events = {};
+    const toggle = {checked: false, addEventListener: (name, fn) => { events[name] = fn; }};
+    let boughtSyncs = 0, cancelledSyncs = 0;
     let initialize;
     const context = vm.createContext({
-        bootstrap: {Collapse},
         document: {
-            getElementById: id => id === 'bought-toggle' ? toggle : section,
+            getElementById: id => id === 'bought-toggle' ? toggle : null,
             addEventListener: (name, fn) => { initialize = fn; },
         },
-        toggleCancelledVisibility: () => { visibilitySyncs++; },
+        toggleBoughtVisibility: () => { boughtSyncs++; },
+        toggleCancelledVisibility: () => { cancelledSyncs++; },
     });
-    vm.runInContext(compatibilitySource() + source, context);
+    vm.runInContext(source, context);
     initialize();
-    assert.equal(shown, false);
-    assert.equal(toggle.checked, false);
-    assert.equal(visibilitySyncs, 1);
+    assert.equal(boughtSyncs, 1);
+    assert.equal(cancelledSyncs, 1);
     toggle.checked = true;
     events.change();
-    assert.equal(shown, true);
+    assert.equal(boughtSyncs, 2);
     toggle.checked = false;
     events.change();
-    assert.equal(shown, false);
-    instance.show();
-    assert.equal(toggle.checked, true);
-    instance.hide();
-    assert.equal(toggle.checked, false);
-    initialize();
-    assert.equal(constructions, 1);
+    assert.equal(boughtSyncs, 3);
     context.document.getElementById = () => null;
-    initialize(); // Other pages have no bought filter.
-    assert.equal(constructions, 1);
+    assert.doesNotThrow(initialize);
+    assert.equal(template.includes('bought-items-list'), false);
+});
+
+test('live product row refresh serializes updates and restores focus by product', async () => {
+    const template = readFileSync(join(__dirname, 'templates/base.html'), 'utf8');
+    const source = template.slice(
+        template.indexOf('let rowRefreshRunning = false;'),
+        template.indexOf('let finalUnitId = null;'),
+    );
+    let fetches = 0, resolveFirst, focuses = 0, headingSyncs = 0;
+    const button = {
+        dataset: {itemId: '17', basketAction: 'add_to_basket'},
+        closest: () => ({dataset: {productId: '9', state: 'ordinary'}}),
+    };
+    const control = {disabled: false, focus: () => { focuses++; }};
+    const selectors = [];
+    const list = {
+        innerHTML: '',
+        contains: element => element === button,
+        querySelector: selector => {
+            selectors.push(selector);
+            return selector === '[data-product-id="9"]' ? {
+                querySelector: name => name === '[data-basket-action="add_to_basket"]:not(:disabled)'
+                    ? control : null,
+            } : null;
+        },
+    };
+    const fields = {
+        shopping_list: list, 'bought-count': {}, 'buy-my-basket-btn': {},
+    };
+    const response = rows => ({
+        ok: true, json: async () => ({
+            shopping_list_id: 7, rows_html: rows, bought_count: 1,
+            has_basket_items: true, show_completion_suggestion: false,
+        }),
+    });
+    const context = vm.createContext({
+        document: {
+            activeElement: button, body: {},
+            getElementById: id => {
+                assert.ok(Object.hasOwn(fields, id), `Unexpected element ${id}`);
+                return fields[id];
+            },
+        },
+        currentOpenListId: 7,
+        window: {location: {href: 'http://localhost/list/', reload: () => assert.fail('Unexpected reload')}},
+        URL, console,
+        syncGroupHeadingVisibility: () => { headingSyncs++; },
+        fetch: () => {
+            fetches++;
+            return fetches === 1 ? new Promise(resolve => { resolveFirst = resolve; })
+                : Promise.resolve(response('latest'));
+        },
+    });
+    vm.runInContext(source, context);
+    const pending = context.refreshShoppingListRows();
+    await context.refreshShoppingListRows();
+    assert.equal(fetches, 1);
+    resolveFirst(response('first'));
+    await pending;
+    assert.equal(fetches, 2);
+    assert.equal(list.innerHTML, 'latest');
+    assert.equal(fields['bought-count'].textContent, 1);
+    assert.equal(fields['buy-my-basket-btn'].disabled, false);
+    assert.equal(focuses, 2);
+    assert.equal(headingSyncs, 2);
+    assert.ok(selectors.includes('[data-product-id="9"]'));
+    assert.ok(selectors.every(selector => !selector.includes('data-state')));
 });
 
 test('disabled controls, final-unit confirmation and dismissal', async () => {

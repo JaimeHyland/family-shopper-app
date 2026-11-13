@@ -153,6 +153,70 @@ def render_item_html(item):
     return render_to_string(template, {'item': item})
 
 
+def aggregate_product_rows(items, family, viewer_id, remaining_by_product=None):
+    """Combine state/owner summaries without assigning ownership to a row.
+
+    Action IDs always identify real eligible units; the mutation handlers
+    still perform their normal locked checks against the saved records.
+    """
+    from copy import copy
+
+    products = {}
+    for group in aggregate_unit_rows(items, family, remaining_by_product):
+        products.setdefault(group.product_id, []).append(group)
+
+    rows = []
+    for groups in products.values():
+        row = copy(groups[0])
+        row.unit_count = sum(group.unit_count for group in groups)
+        row.unit_ids = [pk for group in groups for pk in group.unit_ids]
+        ordinary = [group for group in groups if group.state == 'ordinary']
+        eligible = [
+            group for group in ordinary if group.put_in_basket_by_id is None
+        ]
+        row.basket_groups = [
+            group for group in groups if group.state == 'in_basket'
+        ]
+        row.bought_groups = [
+            group for group in groups if group.state == 'bought'
+        ]
+        row.cancelled_groups = [
+            group for group in groups if group.state == 'cancelled'
+        ]
+        row.unassigned_count = sum(group.unit_count for group in eligible)
+        row.basket_count = sum(group.unit_count for group in row.basket_groups)
+        row.bought_count = sum(group.unit_count for group in row.bought_groups)
+        row.cancelled_count = sum(
+            group.unit_count for group in row.cancelled_groups
+        )
+        row.bought_only = row.bought_count == row.unit_count
+        row.all_cancelled = row.cancelled_count == row.unit_count
+        row.state = (
+            'bought' if row.bought_only else
+            'cancelled' if row.all_cancelled else
+            'in_basket' if not ordinary and row.basket_groups else 'ordinary'
+        )
+        add_sources = ordinary + row.basket_groups
+        row.add_unit_id = add_sources[0].pk if add_sources else None
+        row.remove_unit_id = eligible[0].pk if eligible else None
+        row.put_in_basket_id = (
+            row.add_unit_id if row.units_not_in_baskets else None
+        )
+        row.return_unit_id = next((
+            group.pk for group in row.basket_groups
+            if group.put_in_basket_by_id == viewer_id
+        ), None)
+        row.detail_slug = next((
+            group.slug for group in groups if not group.in_basket
+        ), None)
+        row.restored_by_name = ', '.join(dict.fromkeys(
+            group.restored_by_name for group in ordinary
+            if group.restored_by_name
+        )) or None
+        rows.append(row)
+    return rows
+
+
 def broadcast_list_item_update(item, user):
     # Only the saved DB state and the authenticated user are ever broadcast.
     # A channel-layer failure here must never affect the HTTP response for
@@ -221,17 +285,14 @@ def broadcast_list_item_added(item, user):
 
 
 def broadcast_product_list_status(family, product, user):
-    # Lets the product catalogue page show a live "On list" indicator
-    # without a page reload: sent whenever a product's aggregate active
-    # quantity on the shopping list changes (added, quantity increased, a
-    # variant created for it, or an item bought out of the active list).
+    # Initial rendering and live updates use the same saved unit counts.
     channel_layer = get_channel_layer()
     if channel_layer is None:
         return
 
-    on_list_quantity = _get_active_quantities_for_products(
+    status = _get_product_list_status(
         family, [product.id],
-    ).get(product.id)
+    ).get(product.id, {})
 
     try:
         async_to_sync(channel_layer.group_send)(
@@ -239,7 +300,13 @@ def broadcast_product_list_status(family, product, user):
             {
                 'type': 'product_list_status',
                 'product_id': product.id,
-                'on_list_quantity': on_list_quantity,
+                'on_list_quantity': status.get('on_list_quantity'),
+                'list_total_quantity': status.get('list_total_quantity', 0),
+                'list_unbasketed_quantity': status.get(
+                    'list_unbasketed_quantity', 0,
+                ),
+                'list_basket_quantity': status.get('list_basket_quantity', 0),
+                'list_bought_quantity': status.get('list_bought_quantity', 0),
                 'user': user.get_username(),
             }
         )
@@ -400,15 +467,56 @@ def _get_active_quantities_for_products(family, product_ids):
     return {row['product_id']: row['total'] for row in rows}
 
 
+def _get_product_list_status(family, product_ids):
+    """Count persisted units on the open list, with bought taking precedence.
+
+    Cancelled units remain on the list, as in the existing catalogue
+    indicator; they count as unbasketed rather than disappearing.
+    """
+    if not product_ids:
+        return {}
+    rows = ListItem.objects.filter(
+        family=family, current=True,
+        shopping_list__status=ShoppingList.Status.OPEN,
+        product_id__in=product_ids,
+    ).order_by().values('product_id').annotate(
+        list_total_quantity=Count('pk'),
+        list_basket_quantity=Count(
+            'pk', filter=Q(
+                date_bought__isnull=True, cancelled=False, in_basket=True,
+            ),
+        ),
+        list_bought_quantity=Count(
+            'pk', filter=Q(date_bought__isnull=False),
+        ),
+    )
+    statuses = {}
+    for row in rows:
+        total = row['list_total_quantity']
+        bought = row['list_bought_quantity']
+        row['list_unbasketed_quantity'] = (
+            total - bought - row['list_basket_quantity']
+        )
+        # Preserve the active-quantity contract for existing consumers.
+        row['on_list_quantity'] = total - bought or None
+        statuses[row.pop('product_id')] = row
+    return statuses
+
+
 def _annotate_products_with_list_status(products, family):
-    """Attaches on_list_quantity (an int, or None if not on the active
-    list) to each product in the given iterable, in place, for display in
-    the product catalogue. Products are matched by id (never by name)."""
-    quantities = _get_active_quantities_for_products(
+    """Attach open-list unit counts to catalogue products, matched by ID."""
+    statuses = _get_product_list_status(
         family, [product.id for product in products],
     )
     for product in products:
-        product.on_list_quantity = quantities.get(product.id)
+        status = statuses.get(product.id, {})
+        product.on_list_quantity = status.get('on_list_quantity')
+        product.list_total_quantity = status.get('list_total_quantity', 0)
+        product.list_unbasketed_quantity = status.get(
+            'list_unbasketed_quantity', 0,
+        )
+        product.list_basket_quantity = status.get('list_basket_quantity', 0)
+        product.list_bought_quantity = status.get('list_bought_quantity', 0)
     return products
 
 
@@ -747,14 +855,15 @@ class ShoppingListView(FamilyMembershipRequiredMixin, View):
         ).values('product_id').annotate(total=Count('pk')).values_list(
             'product_id', 'total',
         ))
-        shopping_list = _active_list_items(request.family).filter(
-            shopping_list=open_list,
+        shopping_list = ListItem.objects.filter(
+            family=request.family, current=True, shopping_list=open_list,
         ).select_related(
             'product__category', 'preferred_shop', 'family',
         ).order_by('product__product_name', 'pk')
-        shopping_list = aggregate_unit_rows(
+        shopping_list = aggregate_product_rows(
             list(_apply_filter_state(shopping_list, filter_state)),
             request.family,
+            request.user.pk,
             remaining_by_product,
         )
 
@@ -763,17 +872,13 @@ class ShoppingListView(FamilyMembershipRequiredMixin, View):
             if group_by != 'none' else None
         )
 
-        # Bought items stay on the current list (current=True) but are
-        # shown separately, in a collapsed section, from the unpurchased
-        # items above.
-        bought_items = aggregate_unit_rows(list(ListItem.objects.filter(
+        bought_items = [row for row in shopping_list if row.bought_count]
+        bought_unit_count = ListItem.objects.filter(
             family=request.family,
             shopping_list=open_list,
             current=True,
             date_bought__isnull=False,
-        ).select_related('product', 'family').order_by('-date_bought')),
-            request.family,
-        )
+        ).count()
 
         show_completion_suggestion, list_item_count = (
             get_completion_suggestion_context(request, open_list)
@@ -791,7 +896,7 @@ class ShoppingListView(FamilyMembershipRequiredMixin, View):
             'filter_state': filter_state,
             'categories': categories,
             'bought_items': bought_items,
-            'bought_unit_count': sum(row.unit_count for row in bought_items),
+            'bought_unit_count': bought_unit_count,
             'shops': shops,
             'open_list': open_list,
             'show_completion_suggestion': show_completion_suggestion,
@@ -803,9 +908,6 @@ class ShoppingListView(FamilyMembershipRequiredMixin, View):
                 'shopping_list_id': open_list.pk,
                 'rows_html': render_to_string(
                     'shopping_list/_shopping_list_rows.html', context, request=request,
-                ),
-                'bought_html': render_to_string(
-                    'shopping_list/_bought_rows.html', context, request=request,
                 ),
                 'bought_count': context['bought_unit_count'],
                 'has_basket_items': has_basket_items,
@@ -855,8 +957,7 @@ class ShoppingListView(FamilyMembershipRequiredMixin, View):
                     item, request.user,
                 ),
             )
-            # A bought item drops out of the active list, so the product
-            # catalogue's "On list" indicator for it needs updating too.
+            # Buying moves units between the catalogue's status counts.
             transaction.on_commit(
                 lambda item=item: broadcast_product_list_status(
                     request.family, item.product, request.user,
@@ -1011,6 +1112,12 @@ class ShoppingListView(FamilyMembershipRequiredMixin, View):
         transaction.on_commit(
             lambda: broadcast_list_item_update(item, request.user),
         )
+        if action in ('add_to_basket', 'remove_from_basket'):
+            transaction.on_commit(
+                lambda: broadcast_product_list_status(
+                    request.family, item.product, request.user,
+                ),
+            )
         if action in ('cancel', 'uncancel'):
             transaction.on_commit(
                 lambda: _check_and_broadcast_list_completion(
@@ -1952,4 +2059,3 @@ class FamilyMembersView(FamilyMembershipRequiredMixin, View):
                 return HttpResponseBadRequest("Unknown action.")
 
         return redirect('family_members', family_slug=request.family.slug)
-

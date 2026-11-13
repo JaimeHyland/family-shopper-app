@@ -15,8 +15,115 @@ from django.utils import timezone
 
 from family_shopping_list.consumers import ShoppingConsumer
 from .models import ListItem, ShoppingList
-from .tests import TwoFamilyTestCase, TwoFamilyFixtureMixin, ws_path
-from .views import aggregate_unit_rows
+from .tests import TwoFamilyTestCase, TwoFamilyFixtureMixin, add_test_units, ws_path
+from .views import aggregate_product_rows, aggregate_unit_rows
+
+
+class ConsolidatedProductRowTests(TwoFamilyTestCase):
+    def rows(self, viewer=None, remaining=None):
+        return aggregate_product_rows(
+            ListItem.objects.filter(
+                family=self.family_a, current=True,
+                shopping_list=self.list_item_a.shopping_list,
+            ).order_by('pk'),
+            self.family_a, (viewer or self.member_a).pk, remaining,
+        )
+
+    def test_mixed_states_and_owners_form_one_row_without_mutating_units(self):
+        units = add_test_units(self.list_item_a, 5)
+        for unit, owner in zip(units[:2], [self.member_a, self.admin_a]):
+            unit.in_basket = True
+            unit.put_in_basket_by = owner
+            unit.save()
+        for unit, buyer in zip(units[2:4], [self.member_a, self.admin_a]):
+            unit.date_bought = timezone.now()
+            unit.quantity_bought = 1
+            unit.buyer = buyer
+            unit.save()
+        units[4].cancelled = True
+        units[4].cancelled_by = self.admin_a
+        units[4].save()
+        before = list(ListItem.objects.order_by('pk').values())
+        rows = self.rows()
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(
+            (row.unit_count, row.unassigned_count, row.basket_count,
+             row.bought_count, row.cancelled_count), (6, 1, 2, 2, 1),
+        )
+        self.assertEqual(
+            {(group.owner_name, group.unit_count) for group in row.basket_groups},
+            {('member_a', 1), ('admin_a', 1)},
+        )
+        self.assertEqual(
+            {(group.buyer_name, group.unit_count) for group in row.bought_groups},
+            {('member_a', 1), ('admin_a', 1)},
+        )
+        self.assertEqual(set(row.unit_ids), {self.list_item_a.pk, *(u.pk for u in units)})
+        self.assertEqual(row.put_in_basket_id, self.list_item_a.pk)
+        self.assertEqual(row.remove_unit_id, self.list_item_a.pk)
+        self.assertEqual(row.return_unit_id, units[0].pk)
+        self.assertFalse(row.bought_only)
+        self.assertFalse(row.all_cancelled)
+        self.assertEqual(list(ListItem.objects.order_by('pk').values()), before)
+
+    def test_controls_target_eligible_units_even_when_first_unit_is_bought(self):
+        free, own, other = add_test_units(self.list_item_a, 3)
+        self.list_item_a.date_bought = timezone.now()
+        self.list_item_a.quantity_bought = 1
+        self.list_item_a.save()
+        for unit, owner in [(own, self.member_a), (other, self.admin_a)]:
+            unit.in_basket = True
+            unit.put_in_basket_by = owner
+            unit.save()
+        row = self.rows()[0]
+        self.assertEqual(row.add_unit_id, free.pk)
+        self.assertEqual(row.remove_unit_id, free.pk)
+        self.assertEqual(row.put_in_basket_id, free.pk)
+        self.assertEqual(row.return_unit_id, own.pk)
+        self.assertEqual(self.rows(self.admin_a)[0].return_unit_id, other.pk)
+
+    def test_basket_exhaustion_and_bought_only_rows_disable_assignment(self):
+        self.list_item_a.in_basket = True
+        self.list_item_a.put_in_basket_by = self.admin_a
+        self.list_item_a.save()
+        row = self.rows()[0]
+        self.assertIsNone(row.put_in_basket_id)
+        self.assertIsNone(row.remove_unit_id)
+        self.assertIsNone(row.return_unit_id)
+        self.assertEqual(row.add_unit_id, self.list_item_a.pk)
+        self.list_item_a.date_bought = timezone.now()
+        self.list_item_a.quantity_bought = 1
+        self.list_item_a.in_basket = False
+        self.list_item_a.save()
+        row = self.rows()[0]
+        self.assertTrue(row.bought_only)
+        self.assertEqual(row.bought_count, 1)
+        self.assertIsNone(row.add_unit_id)
+        self.assertIsNone(row.put_in_basket_id)
+        self.assertIsNone(row.return_unit_id)
+
+    def test_filtered_basket_row_can_assign_unfiltered_eligible_unit(self):
+        self.list_item_a.in_basket = True
+        self.list_item_a.put_in_basket_by = self.admin_a
+        self.list_item_a.save()
+        row = self.rows(remaining={self.product_a.pk: 1})[0]
+        self.assertEqual(row.unassigned_count, 0)
+        self.assertEqual(row.put_in_basket_id, self.list_item_a.pk)
+        self.assertIsNone(row.remove_unit_id)
+
+    def test_distinct_product_ids_never_merge(self):
+        from .models import Product
+        variant = Product.objects.create(
+            family=self.family_a, creator=self.admin_a,
+            product_name='Product A variant', category=self.category_a,
+            default_shop=self.shop_a, based_on=self.product_a,
+        )
+        ListItem.objects.create(
+            family=self.family_a, product=variant, creator=self.admin_a,
+        )
+        self.assertEqual({row.product_id for row in self.rows()},
+                         {self.product_a.pk, variant.pk})
 
 
 class UnitControlTests(TwoFamilyTestCase):
@@ -153,9 +260,10 @@ class UnitControlTests(TwoFamilyTestCase):
         self.assertEqual(self.action(self.list_item_a, 'remove_unit').status_code, 200)
         self.assertFalse(ListItem.objects.filter(pk=self.list_item_a.pk).exists())
         page = self.client.get(self.url_a('shopping_list'))
-        self.assertEqual({(r.state, r.unit_count) for r in page.context['shopping_list']}, {
-            ('ordinary', 1), ('in_basket', 1),
-        })
+        self.assertEqual(len(page.context['shopping_list']), 1)
+        row = page.context['shopping_list'][0]
+        self.assertEqual((row.unit_count, row.unassigned_count, row.basket_count),
+                         (3, 1, 2))
         self.assertEqual(self.action(ordinary, 'remove_unit').status_code, 409)
         self.assertEqual(self.action(ordinary, 'cancel_final_unit').status_code, 200)
         page = self.client.get(self.url_a('shopping_list'))
@@ -269,9 +377,9 @@ class UnitBasketTests(TwoFamilyTestCase):
         })
 
     def rows(self):
-        return aggregate_unit_rows(ListItem.objects.filter(
+        return aggregate_product_rows(ListItem.objects.filter(
             family=self.family_a, current=True,
-        ), self.family_a)
+        ), self.family_a, self.member_a.pk)
 
     def test_purchase_button_tracks_own_basket_on_page_and_live_refresh(self):
         def assert_button(enabled):
@@ -318,23 +426,22 @@ class UnitBasketTests(TwoFamilyTestCase):
         self.action(self.list_item_a, 'add_to_basket')
         self.action(self.list_item_a, 'add_to_basket')
         rows = self.rows()
-        self.assertEqual(len(rows), 2)
-        self.assertEqual({(r.state, r.unit_count) for r in rows}, {
-            ('in_basket', 2), ('ordinary', 2),
-        })
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0].unit_count, rows[0].basket_count,
+                          rows[0].unassigned_count), (4, 2, 2))
         self.assertTrue(all(r.quantity_required == 1 for r in rows))
 
-    def test_multiple_owners_and_remaining_units_are_separate_rows(self):
+    def test_multiple_owners_and_remaining_units_share_one_row(self):
         units = self.add_units(3)
         self.action(self.list_item_a, 'add_to_basket')
         self.client.force_login(self.admin_a)
         self.action(units[-1], 'add_to_basket')
         rows = self.rows()
-        self.assertEqual(len(rows), 3)
-        self.assertEqual({r.put_in_basket_by_id for r in rows if r.in_basket}, {
+        self.assertEqual(len(rows), 1)
+        self.assertEqual({group.put_in_basket_by_id for group in rows[0].basket_groups}, {
             self.member_a.pk, self.admin_a.pk,
         })
-        self.assertEqual(next(r.unit_count for r in rows if r.state == 'ordinary'), 2)
+        self.assertEqual(rows[0].unassigned_count, 2)
 
     def test_down_rejects_exhausted_product_and_return_rejects_other_owner(self):
         self.action(self.list_item_a, 'add_to_basket')
@@ -408,11 +515,12 @@ class UnitBasketTests(TwoFamilyTestCase):
         self.action(self.list_item_a, 'add_to_basket')
         self.action(second, 'add_to_basket')
         response = self.client.get(self.url_a('shopping_list'))
-        self.assertEqual(len(response.context['shopping_list']), 2)
+        self.assertEqual(len(response.context['shopping_list']), 1)
         data = self.client.get(self.url_a('shopping_list'), {'rows_only': '1'}).json()
         self.assertIn(data['rows_html'], response.content.decode())
-        self.assertEqual(data['rows_html'].count('<li '), 2)  # 2 aggregated rows, no column headings # noqa
-        self.assertIn('(&times;2)', data['rows_html'])
+        self.assertEqual(data['rows_html'].count('<li '), 1)
+        self.assertIn('class="unit-total-quantity">3</span>', data['rows_html'])
+        self.assertIn('class="unit-basket-quantity">2</span>', data['rows_html'])
         self.assertNotIn('completed-chkbx', data['rows_html'])
         self.assertIn('Add one item to the shopping list', data['rows_html'])
         self.client.force_login(self.admin_a)
@@ -444,8 +552,9 @@ class UnitBasketTests(TwoFamilyTestCase):
         self.client.post(self.url_a('shopping_list'), {'action': 'buy_basket'})
         data = self.client.get(self.url_a('shopping_list'), {'rows_only': '1'}).json()
         self.assertEqual(data['bought_count'], 2)
-        self.assertEqual(data['bought_html'].count('<li '), 1)
-        self.assertIn('Bought by member_a', data['bought_html'])
+        self.assertEqual(data['rows_html'].count('<li '), 1)
+        self.assertIn('bought-only-list-item', data['rows_html'])
+        self.assertIn('Bought by member_a: 2', data['rows_html'])
 
     def test_stale_purchase_form_cannot_purchase_replacement_list_units(self):
         old_id = self.list_item_a.shopping_list_id
@@ -540,6 +649,85 @@ class UnitBasketTests(TwoFamilyTestCase):
         self.assertEqual(detail.context['requested_quantity'], 2)
 
 
+class ConsolidatedProductDisplayTests(TwoFamilyTestCase):
+    def setUp(self):
+        super().setUp()
+        self.client.force_login(self.member_a)
+        self.own, self.other, self.bought = add_test_units(self.list_item_a, 3)
+        for unit, owner in [(self.own, self.member_a), (self.other, self.admin_a)]:
+            unit.in_basket = True
+            unit.put_in_basket_by = owner
+            unit.save()
+        self.bought.date_bought = timezone.now()
+        self.bought.quantity_bought = 1
+        self.bought.buyer = self.admin_a
+        self.bought.save()
+
+    def test_mixed_product_stays_in_one_row_in_every_grouping_mode(self):
+        for group_by in ('none', 'category', 'shop', 'category_shop', 'shop_category'):
+            with self.subTest(group_by=group_by):
+                page = self.client.get(self.url_a('shopping_list'), {'group_by': group_by})
+                rows = page.context['shopping_list']
+                self.assertEqual(len(rows), 1)
+                html = page.content.decode()
+                self.assertEqual(html.count(f'data-product-id="{self.product_a.pk}"'), 1)
+                for selector, quantity in [
+                    ('total', 4), ('unassigned', 1), ('basket', 2), ('bought', 1),
+                ]:
+                    self.assertIn(f'class="unit-{selector}-quantity">{quantity}</span>', html)
+                self.assertIn('In basket: member_a: 1', html)
+                self.assertIn('In basket: admin_a: 1', html)
+                self.assertIn('Bought by admin_a: 1', html)
+                self.assertIn('badge bg-light text-dark', html)
+                self.assertNotIn('member-color-', html.split('product-unit-row', 1)[1].split('>', 1)[0])
+                self.assertNotIn('id="bought-items-list"', html)
+                self.assertFalse(rows[0].bought_only)
+
+    def test_controls_use_separate_real_unit_ids_and_reenable_after_return(self):
+        controls = UnitControlTests.controls(self)
+        self.assertNotIn('disabled', controls['add_to_basket'])
+        self.assertEqual(controls['add_to_basket']['data-item-id'], str(self.list_item_a.pk))
+        self.assertEqual(controls['remove_unit']['data-item-id'], str(self.list_item_a.pk))
+        self.assertEqual(controls['remove_from_basket']['data-item-id'], str(self.own.pk))
+        self.client.post(self.url_a('shopping_list'), {
+            'action': 'add_to_basket', 'item_id': controls['add_to_basket']['data-item-id'],
+        })
+        self.assertIn('disabled', UnitControlTests.controls(self)['add_to_basket'])
+        self.client.post(self.url_a('shopping_list'), {
+            'action': 'remove_from_basket', 'item_id': self.own.pk,
+        })
+        self.assertNotIn('disabled', UnitControlTests.controls(self)['add_to_basket'])
+        self.client.force_login(self.admin_a)
+        controls = UnitControlTests.controls(self)
+        self.assertEqual(controls['remove_from_basket']['data-item-id'], str(self.other.pk))
+
+    def test_status_labels_follow_language_and_member_names_are_escaped(self):
+        from .models import FamilyMembership
+        from .templatetags.i18n_json import _load_catalog
+        FamilyMembership.objects.filter(family=self.family_a, user=self.member_a).update(
+            display_name='<script>alert(1)</script>',
+        )
+        for language in ('en', 'de', 'es'):
+            with self.subTest(language=language):
+                page = self.client.get(self.url_a('shopping_list'), HTTP_ACCEPT_LANGUAGE=language)
+                html = page.content.decode()
+                catalog = _load_catalog(language)
+                for key in ('total', 'unassigned', 'in_basket', 'bought'):
+                    self.assertIn(catalog['shopping_list.status.' + key], html)
+                self.assertIn('&lt;script&gt;alert(1)&lt;/script&gt;', html)
+                self.assertNotIn('<script>alert(1)</script>', html)
+
+    def test_cancelled_unit_does_not_hide_a_mixed_product(self):
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+        page = self.client.get(self.url_a('shopping_list'))
+        row = page.context['shopping_list'][0]
+        self.assertFalse(row.all_cancelled)
+        self.assertEqual(row.cancelled_count, 1)
+        html = page.content.decode().split('product-unit-row', 1)[1].split('>', 1)[0]
+        self.assertNotIn('cancelled-list-item', html)
+
+
 class UnitWebSocketTests(TwoFamilyFixtureMixin, TransactionTestCase):
     async def test_four_controls_broadcast_and_refresh_grouped_quantities(self):
         communicator = WebsocketCommunicator(ShoppingConsumer.as_asgi(), ws_path(self.family_a))
@@ -551,8 +739,8 @@ class UnitWebSocketTests(TwoFamilyFixtureMixin, TransactionTestCase):
         try:
             expected = [
                 ('add_unit', ['list_item_added', 'product_list_status'], 1, False),
-                ('add_to_basket', ['list_item_update'], 2, True),
-                ('remove_from_basket', ['list_item_update'], 1, False),
+                ('add_to_basket', ['list_item_update', 'product_list_status'], 1, True),
+                ('remove_from_basket', ['list_item_update', 'product_list_status'], 1, False),
                 ('remove_unit', ['product_list_status'], 1, False),
             ]
             for action, types, groups, has_basket in expected:
@@ -592,17 +780,20 @@ class UnitWebSocketTests(TwoFamilyFixtureMixin, TransactionTestCase):
         await sync_to_async(self.client.force_login)(self.member_a)
         try:
             for item, action, expected in [
-                (self.list_item_a, 'add_to_basket', 2),
+                (self.list_item_a, 'add_to_basket', 1),
                 (second, 'add_to_basket', 1),
-                (self.list_item_a, 'remove_from_basket', 2),
-                (self.list_item_a, 'cancel', 2),
-                (self.list_item_a, 'uncancel', 2),
+                (self.list_item_a, 'remove_from_basket', 1),
+                (self.list_item_a, 'cancel', 1),
+                (self.list_item_a, 'uncancel', 1),
             ]:
                 await sync_to_async(self.client.post)(self.url_a('shopping_list'), {
                     'item_id': item.pk, 'action': action,
                 })
                 event = await communicator.receive_json_from()
                 self.assertEqual(event['type'], 'list_item_update')
+                if action in ('add_to_basket', 'remove_from_basket'):
+                    status = await communicator.receive_json_from()
+                    self.assertEqual(status['type'], 'product_list_status')
                 response = await sync_to_async(self.client.get)(self.url_a('shopping_list'), {
                     'rows_only': '1',
                 })
@@ -614,6 +805,44 @@ class UnitWebSocketTests(TwoFamilyFixtureMixin, TransactionTestCase):
             self.assertTrue(second.in_basket)
         finally:
             await communicator.disconnect()
+
+    async def test_members_refresh_one_row_after_basket_and_purchase_events(self):
+        await sync_to_async(add_test_units)(self.list_item_a, 2)
+        communicators = []
+        try:
+            for user in (self.member_a, self.admin_a):
+                communicator = WebsocketCommunicator(ShoppingConsumer.as_asgi(), ws_path(self.family_a))
+                communicator.scope['user'] = user
+                communicator.scope['url_route'] = {'kwargs': {'family_slug': self.family_a.slug}}
+                connected, _ = await communicator.connect()
+                self.assertTrue(connected)
+                communicators.append((user, communicator))
+            for user, action, event_count, quantities in [
+                (self.member_a, 'add_to_basket', 2, (2, 1, 0)),
+                (self.admin_a, 'add_to_basket', 2, (1, 2, 0)),
+                (self.admin_a, 'buy_basket', 3, (1, 1, 1)),
+            ]:
+                await sync_to_async(self.client.force_login)(user)
+                await sync_to_async(self.client.post)(self.url_a('shopping_list'), {
+                    'item_id': self.list_item_a.pk, 'action': action,
+                })
+                for viewer, communicator in communicators:
+                    events = [await communicator.receive_json_from() for _ in range(event_count)]
+                    self.assertIn('list_item_update', [event['type'] for event in events])
+                    await sync_to_async(self.client.force_login)(viewer)
+                    response = await sync_to_async(self.client.get)(
+                        self.url_a('shopping_list'), {'rows_only': '1'},
+                    )
+                    html = response.json()['rows_html']
+                    self.assertEqual(html.count('<li '), 1)
+                    for selector, count in zip(('unassigned', 'basket', 'bought'), quantities):
+                        self.assertIn(f'class="unit-{selector}-quantity">{count}</span>', html)
+                    if action == 'buy_basket':
+                        self.assertIn('In basket: member_a: 1', html)
+                        self.assertIn('Bought by admin_a: 1', html)
+        finally:
+            for _, communicator in communicators:
+                await communicator.disconnect()
 
 
 class UnitConcurrencyTests(TwoFamilyFixtureMixin, TransactionTestCase):
@@ -1006,4 +1235,3 @@ class AdultGroupRemovalMigrationTests(TransactionTestCase):
         ).apps
         Group = apps.get_model('auth', 'Group')
         self.assertFalse(Group.objects.filter(name='adult').exists())
-

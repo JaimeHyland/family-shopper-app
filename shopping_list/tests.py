@@ -16,6 +16,7 @@ from utilities.utils import is_family_admin
 from .forms import CategoryForm, ProductForm, ShopForm
 from .views import (
     GROUP_BY_DIMENSIONS,
+    _get_product_list_status,
     _group_label_and_sort_key,
     group_shopping_list_items,
 )
@@ -652,7 +653,7 @@ class BuyBasketTests(TwoFamilyTestCase):
 
 
 class BoughtSectionDisplayTests(TwoFamilyTestCase):
-    def test_bought_item_moves_from_shopping_list_to_bought_items_context(self): # noqa
+    def test_bought_item_remains_in_one_toggleable_shopping_list_row(self):
         self.list_item_a.in_basket = True
         self.list_item_a.put_in_basket_by = self.member_a
         self.list_item_a.save()
@@ -662,8 +663,11 @@ class BoughtSectionDisplayTests(TwoFamilyTestCase):
         response = self.client.get(self.url_a("shopping_list"))
 
         self.list_item_a.refresh_from_db()
-        self.assertNotIn(self.list_item_a, response.context["shopping_list"])
+        self.assertIn(self.list_item_a, response.context["shopping_list"])
         self.assertIn(self.list_item_a, response.context["bought_items"])
+        self.assertTrue(response.context["shopping_list"][0].bought_only)
+        self.assertContains(response, 'bought-only-list-item')
+        self.assertNotContains(response, 'id="bought-section"')
 
     def test_unpurchased_item_is_not_in_bought_items_context(self):
         self.client.login(username="member_a", password="pass1234")
@@ -2700,6 +2704,72 @@ class DuplicateProductPromptWebSocketTests(
             await communicator.disconnect()
 
 
+class ProductCatalogueQuantityTests(TwoFamilyTestCase):
+    def test_counts_mixed_unit_states_including_other_members_baskets(self):
+        units = add_test_units(self.list_item_a, 3)
+        for unit, owner in zip(units[:2], [self.member_a, self.admin_a]):
+            unit.in_basket = True
+            unit.put_in_basket_by = owner
+            unit.save()
+        units[2].date_bought = timezone.now()
+        units[2].quantity_bought = 1
+        units[2].save()
+
+        self.assertEqual(
+            _get_product_list_status(self.family_a, [self.product_a.id]),
+            {self.product_a.id: {
+                'on_list_quantity': 3,
+                'list_total_quantity': 4,
+                'list_unbasketed_quantity': 1,
+                'list_basket_quantity': 2,
+                'list_bought_quantity': 1,
+            }},
+        )
+
+    def test_bought_takes_precedence_over_basket_and_cancelled(self):
+        self.list_item_a.date_bought = timezone.now()
+        self.list_item_a.quantity_bought = 1
+        self.list_item_a.in_basket = True
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+
+        status = _get_product_list_status(
+            self.family_a, [self.product_a.id],
+        )[self.product_a.id]
+        self.assertEqual(status['list_total_quantity'], 1)
+        self.assertEqual(status['list_bought_quantity'], 1)
+        self.assertEqual(status['list_basket_quantity'], 0)
+        self.assertEqual(status['list_unbasketed_quantity'], 0)
+        self.assertIsNone(status['on_list_quantity'])
+
+    def test_cancelled_units_remain_counted_as_unbasketed(self):
+        self.list_item_a.cancelled = True
+        self.list_item_a.save()
+        status = _get_product_list_status(
+            self.family_a, [self.product_a.id],
+        )[self.product_a.id]
+        self.assertEqual(status['list_total_quantity'], 1)
+        self.assertEqual(status['list_unbasketed_quantity'], 1)
+
+    def test_excludes_closed_noncurrent_and_other_family_units(self):
+        old_list = ShoppingList.objects.create(
+            family=self.family_a, status=ShoppingList.Status.CLOSED,
+        )
+        ListItem.objects.create(
+            family=self.family_a, product=self.product_a,
+            shopping_list=old_list, creator=self.admin_a,
+        )
+        noncurrent = add_test_units(self.list_item_a, 1)[0]
+        noncurrent.current = False
+        noncurrent.save()
+        statuses = _get_product_list_status(
+            self.family_a, [self.product_a.id, self.product_b.id],
+        )
+        self.assertEqual(set(statuses), {self.product_a.id})
+        self.assertEqual(statuses[self.product_a.id]['list_total_quantity'], 1)
+        self.assertEqual(_get_product_list_status(self.family_a, []), {})
+
+
 class ProductCatalogueAddFlowTests(TwoFamilyTestCase):
     """Covers clicking a product row to add it, the separate
     product-details info icon, and the "On list" status indicator."""
@@ -2814,7 +2884,7 @@ class ProductCatalogueAddFlowTests(TwoFamilyTestCase):
         row_html = self._extract_row_html(
             response.content.decode(), self.product_a.id,
         )
-        self.assertIn('On list', row_html)
+        self.assertIn('On the list:', row_html)
         badge_start = row_html.index('on-list-badge')
         badge_section = row_html[badge_start:badge_start + 200]
         self.assertNotIn('d-none', badge_section.split('"', 1)[0])
@@ -2967,6 +3037,10 @@ class ProductCatalogueStatusWebSocketTests(
             self.assertEqual(len(status_messages), 1)
             self.assertEqual(status_messages[0]["product_id"], new_product.id) # noqa
             self.assertEqual(status_messages[0]["on_list_quantity"], 1)
+            self.assertEqual(status_messages[0]["list_total_quantity"], 1)
+            self.assertEqual(status_messages[0]["list_unbasketed_quantity"], 1)
+            self.assertEqual(status_messages[0]["list_basket_quantity"], 0)
+            self.assertEqual(status_messages[0]["list_bought_quantity"], 0)
         finally:
             await communicator.disconnect()
 
@@ -3026,7 +3100,7 @@ class ProductCatalogueStatusWebSocketTests(
         finally:
             await communicator.disconnect()
 
-    async def test_buying_a_basket_item_broadcasts_its_removal_from_status(self): # noqa
+    async def test_buying_a_basket_item_broadcasts_bought_status(self):
         def put_in_basket():
             self.list_item_a.in_basket = True
             self.list_item_a.put_in_basket_by = self.member_a
@@ -3053,6 +3127,34 @@ class ProductCatalogueStatusWebSocketTests(
                 status_messages[0]["product_id"], self.product_a.id,
             )
             self.assertIsNone(status_messages[0]["on_list_quantity"])
+            self.assertEqual(status_messages[0]["list_total_quantity"], 1)
+            self.assertEqual(status_messages[0]["list_unbasketed_quantity"], 0)
+            self.assertEqual(status_messages[0]["list_basket_quantity"], 0)
+            self.assertEqual(status_messages[0]["list_bought_quantity"], 1)
+        finally:
+            await communicator.disconnect()
+
+    async def test_basket_transitions_broadcast_updated_counts(self):
+        communicator = await self._connect(self.family_a, self.member_a)
+        try:
+            await sync_to_async(self.client.force_login)(self.member_a)
+            for action, unbasketed, basket in [
+                ('add_to_basket', 0, 1), ('remove_from_basket', 1, 0),
+            ]:
+                await sync_to_async(self.client.post)(
+                    self.url_a("shopping_list"),
+                    {'action': action, 'item_id': self.list_item_a.pk},
+                )
+                messages = [
+                    await communicator.receive_json_from() for _ in range(2)
+                ]
+                status = next(
+                    m for m in messages if m['type'] == 'product_list_status'
+                )
+                self.assertEqual(status['list_total_quantity'], 1)
+                self.assertEqual(status['list_unbasketed_quantity'], unbasketed)
+                self.assertEqual(status['list_basket_quantity'], basket)
+                self.assertEqual(status['list_bought_quantity'], 0)
         finally:
             await communicator.disconnect()
 
@@ -3078,6 +3180,49 @@ class ProductCatalogueStatusWebSocketTests(
         finally:
             await communicator_a.disconnect()
             await communicator_b.disconnect()
+
+
+class ProductCatalogueQuantityDisplayTests(TwoFamilyTestCase):
+    def test_mixed_counts_render_in_every_grouping_mode(self):
+        units = add_test_units(self.list_item_a, 2)
+        for unit in units:
+            unit.in_basket = True
+            unit.put_in_basket_by = self.member_a
+            unit.save()
+        self.client.force_login(self.member_a)
+        for group_by in ['none', 'category', 'shop', 'category_shop',
+                         'shop_category']:
+            with self.subTest(group_by=group_by):
+                response = self.client.get(
+                    self.url_a('product_list'), {'group_by': group_by},
+                )
+                row = ProductCatalogueAddFlowTests._extract_row_html(
+                    response.content.decode(), self.product_a.pk,
+                )
+                self.assertIn(
+                    'Total on list: <span class="on-list-quantity">3</span>', row,
+                )
+                for selector, quantity in [
+                    ('unbasketed', 1), ('basket', 2), ('bought', 0),
+                ]:
+                    self.assertIn(
+                        f'class="on-list-{selector}-quantity">{quantity}</span>',
+                        row,
+                    )
+                self.assertNotIn('d-none', row)
+
+    def test_bought_only_product_keeps_visible_breakdown(self):
+        self.list_item_a.date_bought = timezone.now()
+        self.list_item_a.quantity_bought = 1
+        self.list_item_a.save()
+        self.client.force_login(self.member_a)
+        response = self.client.get(self.url_a('product_list'))
+        row = ProductCatalogueAddFlowTests._extract_row_html(
+            response.content.decode(), self.product_a.pk,
+        )
+        self.assertIn('class="on-list-quantity">1</span>', row)
+        self.assertIn('class="on-list-bought-quantity">1</span>', row)
+        self.assertNotIn('d-none', row)
 
 
 class ShoppingListLifecycleTests(TwoFamilyTestCase):

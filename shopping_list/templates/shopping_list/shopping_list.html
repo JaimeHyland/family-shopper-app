@@ -55,17 +55,10 @@
           <input type="hidden" id="item-id" name="item_id" value="">
           <input type="hidden" name="shopping_list_id" value="{{ open_list.id }}">
           <input type="hidden" id="action-type" name="action" value="">
-          <ul id="shopping_list" class="list-group list-group-flush mx-lg-3 hide-cancelled">
+          <ul id="shopping_list" class="list-group list-group-flush mx-lg-3 hide-cancelled hide-bought">
             {% include "shopping_list/_shopping_list_rows.html" %}
           </ul>
 
-          <div class="mx-lg-3 mt-2">
-            <div class="collapse" id="bought-section">
-              <ul id="bought-items-list" class="list-group list-group-flush">
-                {% include "shopping_list/_bought_rows.html" %}
-              </ul>
-            </div>
-          </div>
           <div class="mx-lg-3 mt-3">
             <button type="button" id="buy-my-basket-btn" class="btn btn-success" onclick="buyMyBasket()" {% if not has_basket_items %}disabled{% endif %}>{% t "shopping_list.purchase_basket" %}</button>
           </div>
@@ -118,7 +111,7 @@
           <fieldset class="mb-3">
             <legend class="h6 mb-1">{% t "shopping_list.visibility" %}</legend>
             <div class="form-check">
-              <input class="form-check-input" type="checkbox" id="bought-toggle" aria-controls="bought-section">
+              <input class="form-check-input" type="checkbox" id="bought-toggle" aria-controls="shopping_list">
               <label class="form-check-label" for="bought-toggle">{% t "shopping_list.show_bought" %} (<span id="bought-count">{{ bought_unit_count }}</span>)</label>
             </div>
             <div class="form-check">
