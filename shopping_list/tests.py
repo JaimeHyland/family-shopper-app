@@ -1,10 +1,13 @@
 from django.contrib.auth.models import User
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connections, transaction
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
+from django.shortcuts import resolve_url
 from django.utils import timezone
 from types import SimpleNamespace
+from unittest.mock import patch
 import threading
 
 from allauth.account.models import EmailAddress
@@ -12,7 +15,7 @@ from asgiref.sync import sync_to_async
 from channels.testing import WebsocketCommunicator
 
 from family_shopping_list.consumers import ShoppingConsumer
-from utilities.utils import is_family_admin
+from utilities.utils import can_close_shopping_list, is_family_admin
 from .forms import CategoryForm, ProductForm, ShopForm
 from .views import (
     GROUP_BY_DIMENSIONS,
@@ -3225,6 +3228,101 @@ class ProductCatalogueQuantityDisplayTests(TwoFamilyTestCase):
         self.assertNotIn('d-none', row)
 
 
+class ShoppingListClosingPermissionTests(TwoFamilyTestCase):
+    def test_policy_requires_a_current_family_admin_membership(self):
+        for role, expected in (
+            (FamilyMembership.Role.ADMIN, True),
+            (FamilyMembership.Role.MEMBER, False),
+        ):
+            with self.subTest(role=role):
+                request = SimpleNamespace(
+                    family_membership=FamilyMembership(role=role),
+                )
+                self.assertEqual(can_close_shopping_list(request), expected)
+        self.assertFalse(can_close_shopping_list(SimpleNamespace()))
+        self.assertFalse(can_close_shopping_list(
+            SimpleNamespace(family_membership=None),
+        ))
+
+    def test_ordinary_member_cannot_close_or_carry_items_forward(self):
+        self.list_item_a.in_basket = True
+        self.list_item_a.put_in_basket_by = self.member_a
+        self.list_item_a.time_put_in_basket = timezone.now()
+        self.list_item_a.save()
+        self.client.force_login(self.member_a)
+        before_lists = list(ShoppingList.objects.order_by('pk').values())
+        before_items = list(ListItem.objects.order_by('pk').values())
+
+        response = self.client.post(self.url_a('close_shopping_list'), {
+            'shopping_list_id': self.list_item_a.shopping_list_id,
+            'carry_forward_unpurchased': 'on',
+            'carry_forward_cancelled': 'on',
+        })
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            list(ShoppingList.objects.order_by('pk').values()), before_lists,
+        )
+        self.assertEqual(
+            list(ListItem.objects.order_by('pk').values()), before_items,
+        )
+
+    def test_family_admin_can_close_independently_of_add_remove_flags(self):
+        FamilyMembership.objects.filter(
+            family=self.family_a, user=self.admin_a,
+        ).update(can_add_list=False, can_remove_list=False)
+        self.client.force_login(self.admin_a)
+        old_list = self.list_item_a.shopping_list
+
+        response = self.client.post(self.url_a('close_shopping_list'), {
+            'shopping_list_id': old_list.pk,
+        })
+
+        self.assertRedirects(response, self.url_a('shopping_list'))
+        old_list.refresh_from_db()
+        self.assertEqual(old_list.status, ShoppingList.Status.CLOSED)
+        self.assertEqual(old_list.closed_by, self.admin_a)
+
+    def test_closing_workflow_uses_the_permission_policy(self):
+        self.client.force_login(self.member_a)
+        old_list = self.list_item_a.shopping_list
+        with patch(
+            'shopping_list.views.can_close_shopping_list', return_value=True,
+        ) as policy:
+            response = self.client.post(self.url_a('close_shopping_list'), {
+                'shopping_list_id': old_list.pk,
+            })
+        self.assertEqual(response.status_code, 302)
+        policy.assert_called_once()
+        self.assertEqual(policy.call_args.args[0].family, self.family_a)
+        old_list.refresh_from_db()
+        self.assertEqual(old_list.status, ShoppingList.Status.CLOSED)
+
+    def test_admin_of_another_family_cannot_close_this_familys_list(self):
+        self.client.force_login(self.admin_b)
+        old_list = self.list_item_a.shopping_list
+        response = self.client.post(self.url_a('close_shopping_list'), {
+            'shopping_list_id': old_list.pk,
+        })
+        self.assertEqual(response.status_code, 404)
+        old_list.refresh_from_db()
+        self.assertEqual(old_list.status, ShoppingList.Status.OPEN)
+
+    def test_anonymous_user_cannot_close_a_list(self):
+        old_list = self.list_item_a.shopping_list
+        response = self.client.post(self.url_a('close_shopping_list'), {
+            'shopping_list_id': old_list.pk,
+        })
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response.url,
+            f"{resolve_url(settings.LOGIN_URL)}?next="
+            f"{self.url_a('close_shopping_list')}",
+        )
+        old_list.refresh_from_db()
+        self.assertEqual(old_list.status, ShoppingList.Status.OPEN)
+
+
 class ShoppingListLifecycleTests(TwoFamilyTestCase):
     """Covers the open/closed list lifecycle: at most one open list per
     family, the close-out suggestion, and closing with carry-forward."""
@@ -3367,7 +3465,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
         self.list_item_a.save()
         add_test_units(self.list_item_a, 1)
         old_list = self._open_list(self.family_a)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
 
         response = self._close(self.family_a, old_list.id)
 
@@ -3375,7 +3473,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
         old_list.refresh_from_db()
         self.assertEqual(old_list.status, ShoppingList.Status.CLOSED)
         self.assertIsNotNone(old_list.closed_at)
-        self.assertEqual(old_list.closed_by, self.member_a)
+        self.assertEqual(old_list.closed_by, self.admin_a)
 
         self.list_item_a.refresh_from_db()
         self.assertEqual(self.list_item_a.shopping_list_id, old_list.id)
@@ -3387,7 +3485,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
         self.list_item_a.cancelled = True
         self.list_item_a.save()
         old_list = self._open_list(self.family_a)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
 
         self._close(self.family_a, old_list.id)
 
@@ -3404,7 +3502,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
         self.list_item_a.cancelled = True
         self.list_item_a.save()
         old_list = self._open_list(self.family_a)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
 
         self._close(self.family_a, old_list.id, carry_forward_cancelled=False) # noqa
 
@@ -3417,7 +3515,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
         self.list_item_a.save()
         add_test_units(self.list_item_a, 2)
         old_list = self._open_list(self.family_a)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
 
         self._close(self.family_a, old_list.id, carry_forward_cancelled=True)
 
@@ -3446,7 +3544,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
             family=self.family_a, creator=self.admin_a, cancelled=True,
         )
         old_list = self._open_list(self.family_a)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
 
         self._close(self.family_a, old_list.id, carry_forward_cancelled=True)
 
@@ -3472,7 +3570,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
             creator=self.admin_a, cancelled=True,
         )
         old_list = self._open_list(self.family_a)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
 
         self._close(self.family_a, old_list.id, carry_forward_cancelled=True)
 
@@ -3497,7 +3595,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
         self.list_item_a.quantity_required = 1
         self.list_item_a.save()
         old_list = self._open_list(self.family_a)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
 
         self._close(self.family_a, old_list.id, carry_forward_cancelled=True)
 
@@ -3513,7 +3611,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
         self.list_item_a.cancelled = True
         self.list_item_a.save()
         old_list = self._open_list(self.family_a)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
 
         first = self._close(
             self.family_a, old_list.id, carry_forward_cancelled=True,
@@ -3546,7 +3644,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
         # cancelled. The user should not be forced to cancel it just to
         # be allowed to close the list.
         open_list = self._open_list(self.family_a)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
 
         response = self._close(self.family_a, open_list.id)
 
@@ -3570,7 +3668,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
         self.assertEqual(
             ListItem.objects.filter(shopping_list=open_list).count(), 0,
         )
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
 
         response = self._close(self.family_a, open_list.id)
 
@@ -3588,7 +3686,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
         self.list_item_a.save()
         add_test_units(self.list_item_a, 3)
         old_list = self._open_list(self.family_a)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
 
         self._close(
             self.family_a, old_list.id, carry_forward_unpurchased=True,
@@ -3629,7 +3727,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
     def test_closing_with_neither_carry_forward_option_carries_nothing(self): # noqa
         self._make_mixed_list()
         old_list = self._open_list(self.family_a)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
 
         self._close(self.family_a, old_list.id)
 
@@ -3641,7 +3739,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
     def test_closing_with_only_unpurchased_carried_forward(self):
         unpurchased_item, cancelled_item = self._make_mixed_list()
         old_list = self._open_list(self.family_a)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
 
         self._close(
             self.family_a, old_list.id, carry_forward_unpurchased=True,
@@ -3659,7 +3757,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
     def test_closing_with_only_cancelled_carried_forward(self):
         unpurchased_item, cancelled_item = self._make_mixed_list()
         old_list = self._open_list(self.family_a)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
 
         self._close(
             self.family_a, old_list.id, carry_forward_cancelled=True,
@@ -3677,7 +3775,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
     def test_closing_with_both_carried_forward(self):
         unpurchased_item, cancelled_item = self._make_mixed_list()
         old_list = self._open_list(self.family_a)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
 
         self._close(
             self.family_a, old_list.id,
@@ -3723,7 +3821,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
             family=self.family_a, creator=self.admin_a, cancelled=True,
         )
         old_list = self._open_list(self.family_a)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
 
         self._close(
             self.family_a, old_list.id,
@@ -3745,9 +3843,9 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
         self.list_item_a.save()
         open_list_a = self._open_list(self.family_a)
         open_list_b = self._open_list(self.family_b)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
 
-        # member_a submits family B's list id while acting within family
+        # admin_a submits family B's list id while acting within family
         # A's own URL; the view only ever operates on family A's actual
         # open list, so this can't touch or close family B's list.
         response = self._close(self.family_a, open_list_b.id)
@@ -3759,7 +3857,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
         self.assertEqual(open_list_b.status, ShoppingList.Status.OPEN)
 
     def test_cross_family_close_request_is_rejected(self):
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
         response = self.client.post(
             self.url_b("close_shopping_list"),
             {"shopping_list_id": self._open_list(self.family_b).id},
@@ -3772,7 +3870,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
         self.list_item_a.cancelled = True
         self.list_item_a.save()
         old_list = self._open_list(self.family_a)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
         self._close(self.family_a, old_list.id)
 
         response = self.client.post(self.url_a("shopping_list"), {
@@ -3790,7 +3888,7 @@ class ShoppingListLifecycleTests(TwoFamilyTestCase):
         self.list_item_a.quantity_bought = 1
         self.list_item_a.save()
         old_list = self._open_list(self.family_a)
-        self.client.force_login(self.member_a)
+        self.client.force_login(self.admin_a)
         self._close(self.family_a, old_list.id)
 
         response = self.client.post(self.url_a("shopping_list"), {
@@ -4815,7 +4913,7 @@ class ShoppingListLifecycleWebSocketTests(
         communicator = await self._connect(self.family_a, self.member_a)
 
         try:
-            await sync_to_async(self.client.force_login)(self.member_a)
+            await sync_to_async(self.client.force_login)(self.admin_a)
             await sync_to_async(self.client.post)(
                 self.url_a("close_shopping_list"),
                 {
@@ -4871,7 +4969,7 @@ class ShoppingListLifecycleWebSocketTests(
         communicator = await self._connect(self.family_a, self.member_a)
 
         try:
-            await sync_to_async(self.client.force_login)(self.member_a)
+            await sync_to_async(self.client.force_login)(self.admin_a)
             response = await sync_to_async(self.client.post)(
                 self.url_a("close_shopping_list"),
                 {"shopping_list_id": old_list.id},
