@@ -10,23 +10,32 @@ Output:
     family-shopping-list-safe.zip
 
 IMPORTANT:
-This script is deliberately conservative, but no automated secret scanner
-can guarantee that it will catch every possible secret. Review the generated
-SAFE_BUNDLE_REPORT.txt before sharing the ZIP.
+Known private files are excluded. Suspicious JSON or text that cannot be
+confidently redacted is withheld and listed in SAFE_BUNDLE_REPORT.txt.
+The ZIP is checked before publication, but review it before sharing:
+heuristics cannot reliably identify unlabelled or encoded private data.
 """
 
 from __future__ import annotations
 
-import os
+import ast
+import json
 import re
-import shutil
 import tempfile
 import zipfile
+from collections import Counter
 from pathlib import Path
 
 
 PROJECT_ROOT = Path.cwd().resolve()
 OUTPUT_ZIP = PROJECT_ROOT / "family-shopping-list-safe.zip"
+REPORT_NAME = "SAFE_BUNDLE_REPORT.txt"
+
+EXCLUDED_PATHS = {
+    "data/fixtures.json": "database fixture with account and session data",
+    "assets/documentation/getting to know the potential user": "private user research",
+    "assets/documentation/gettting_to_know_the_user.md": "private user research",
+}
 
 # Entire directories that should never be included.
 EXCLUDED_DIRS = {
@@ -127,127 +136,153 @@ MAX_FILE_SIZE = 2 * 1024 * 1024  # 2 MB
 # Redaction rules
 # ---------------------------------------------------------------------------
 
-REDACTION_PATTERNS = [
-    # Django/Python assignments such as:
-    # SECRET_KEY = "..."
-    # DATABASE_PASSWORD = '...'
-    (
-        re.compile(
-            r"""(?im)^(\s*
-            (?:
-                SECRET_KEY|
-                API_KEY|
-                API_SECRET|
-                ACCESS_TOKEN|
-                REFRESH_TOKEN|
-                AUTH_TOKEN|
-                PASSWORD|
-                PASSWD|
-                DATABASE_PASSWORD|
-                DB_PASSWORD|
-                EMAIL_HOST_PASSWORD|
-                AWS_SECRET_ACCESS_KEY|
-                AWS_ACCESS_KEY_ID|
-                STRIPE_SECRET_KEY|
-                OPENAI_API_KEY|
-                PRIVATE_KEY
-            )
-            \s*=\s*)
-            (["']).*?\2
-            """,
-            re.VERBOSE,
-        ),
-        r'\1"[REDACTED]"',
-    ),
+REDACTED = "[REDACTED]"
+SENSITIVE_FIELDS = (
+    r"(?:[a-z0-9_-]+[_-])?(?:password|passwd|password[_-]?hash|secret|secret[_-]?key|"
+    r"api[_-]?(?:key|secret)|(?:access|refresh|auth|api|session|id)[_-]?token|"
+    r"client[_-]?secret|private[_-]?key|(?:secret[_-]?)?access[_-]?key(?:[_-]?id)?|"
+    r"session[_-]?(?:id|key|data)|sessionid|authorization|"
+    r"(?:first|last|full)[_-]?name|phone(?:[_-]?number)?|"
+    r"(?:home|street|postal|mailing)[_-]?address|date[_-]?of[_-]?birth)"
+)
+FIELD_PREFIX = rf"""(?<![\w-])(?P<key_quote>["']?){SENSITIVE_FIELDS}(?P=key_quote)[ \t]*[:=][ \t]*"""
+QUOTED_FIELD = re.compile(
+    FIELD_PREFIX + r"""(?P<quote>["'])(?P<value>(?:\\[^\r\n]|(?!(?P=quote))[^\\\r\n])*)(?P=quote)(?!(?P=quote))""",
+    re.IGNORECASE,
+)
+CONFIG_FIELD = re.compile(
+    rf"(?:^[ \t]*(?:-[ \t]+)?|(?<=[{{,])[ \t]*){FIELD_PREFIX}(?P<value>[^\r\n]*)",
+    re.IGNORECASE | re.MULTILINE,
+)
+COMPLEX_LITERAL = re.compile(
+    FIELD_PREFIX + r"""(?:\([ \t\r\n]*|[ \t]*\r?\n[ \t]+)?(?:[rubf]{0,2}["']{3}|[rubf]{1,2}["']|`)""",
+    re.IGNORECASE,
+)
+CONFIG_SUFFIXES = {".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".properties"}
+JSON_SUFFIXES = {".json", ".webmanifest"}
+JSON_LINES_SUFFIXES = {".jsonl", ".ndjson"}
+JSON_EXTRA_FIELDS = re.compile(r"token|cookie|email(?:[_-]?address)?|username", re.IGNORECASE)
+PRIVATE_MODELS = {"auth.user", "sessions.session", "admin.logentry", "account.emailaddress"}
 
-    # JSON/YAML-ish values:
-    # "password": "secret"
-    # token: secret
-    (
-        re.compile(
-            r"""(?im)^(\s*["']?
-            (?:
-                secret_key|
-                api_key|
-                api_secret|
-                access_token|
-                refresh_token|
-                auth_token|
-                password|
-                passwd|
-                db_password|
-                database_password|
-                private_key|
-                client_secret
-            )
-            ["']?\s*[:=]\s*)
-            (["']?)[^\s"',}\]]+\2
-            """,
-            re.VERBOSE,
-        ),
-        r'\1"[REDACTED]"',
+EMAIL = re.compile(r"(?<![\w.%+-])[\w.%+-]+@((?:[a-z0-9-]+\.)+[a-z]{2,})\b", re.IGNORECASE)
+EXAMPLE_DOMAINS = {"example.com", "example.net", "example.org"}
+CREDENTIAL_URL = re.compile(r"""(?i)(\b[a-z][a-z0-9+.-]*://)[^:/@\s"'<>]+:[^/@\s"'<>]+@""")
+AUTH_HEADER = re.compile(r"""(?i)(\bauthorization["']?\s*[:=]\s*["']?(?:bearer|basic)\s+)[a-z0-9._~+/=-]+""")
+TOKEN = re.compile(
+    r"\b(?:sk-[\w-]{16,}|(?:sk|rk)_(?:live|test)_[a-zA-Z0-9]{16,}|"
+    r"gh[pousr]_[a-zA-Z0-9]{20,}|github_pat_[\w]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16}|"
+    r"xox[baprs]-[\w-]{12,}|AIza[\w-]{35}|eyJ[\w-]+\.[\w-]+\.[\w-]+)\b"
+)
+RESIDUAL_PATTERNS = {
+    "private key material": re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
+    "password hash": re.compile(
+        r"(?i)\b(?:pbkdf2_sha\d+|argon2(?:id|i|d)?|bcrypt(?:_sha256)?|scrypt)\$[\w$./+=-]{12,}"
+        r"|\$(?:2[abxy]|argon2(?:id|i|d)?|[156])\$[\w$./+=,-]{12,}"
     ),
+    "session data": re.compile(
+        r"""(?i)\bsessionid\s*=\s*[a-z0-9_-]{16,}|\.?[a-z0-9_-]{16,}:[a-z0-9]{6,12}:[a-z0-9_-]{32,}"""
+    ),
+    "credentials in URL parameters": re.compile(
+        r"(?i)[?&](?:access_token|auth_token|api_key|password|token)=[a-z0-9_%+./=-]{8,}"
+    ),
+    "phone number": re.compile(r"(?<![\w+])\+\d{1,3}[ .-]+(?:\(?\d{2,5}\)?[ .-]+){1,3}\d{2,5}\b"),
+}
 
-    # Authorization: Bearer ey....
-    (
-        re.compile(
-            r"(?i)(Authorization\s*[:=]\s*[\"']?Bearer\s+)[A-Za-z0-9._~+/=-]+"
-        ),
-        r"\1[REDACTED]",
-    ),
 
-    # Database URLs containing username/password.
-    # postgres://user:password@host/db
-    (
-        re.compile(
-            r"(?i)\b(postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?):"
-            r"//([^:\s/@]+):([^@\s/]+)@"
-        ),
-        r"\1://\2:[REDACTED]@",
-    ),
+def is_example_email(match: re.Match[str]) -> bool:
+    domain = match[1].lower()
+    return domain in EXAMPLE_DOMAINS or domain.endswith((".test", ".example", ".invalid"))
 
-    # Common API-token forms.
-    (
-        re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
-        "[REDACTED-API-KEY]",
-    ),
 
-    (
-        re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
-        "[REDACTED-GITHUB-TOKEN]",
-    ),
+def signature_finding(text: str) -> str:
+    for reason, pattern in RESIDUAL_PATTERNS.items():
+        if pattern.search(text):
+            return reason
+    if TOKEN.search(text) or CREDENTIAL_URL.search(text) or AUTH_HEADER.search(text):
+        return "credential signature"
+    if any(not is_example_email(match) for match in EMAIL.finditer(text)):
+        return "non-example email address"
+    return ""
 
-    # AWS Access Key IDs
-    (
-        re.compile(r"\bAKIA[A-Z0-9]{16}\b"),
-        "[REDACTED-AWS-KEY]",
-    ),
 
-    # PEM private keys.
-    (
-        re.compile(
-            r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?"
-            r"-----END [A-Z ]*PRIVATE KEY-----",
-            re.DOTALL,
-        ),
-        "[REDACTED PRIVATE KEY]",
-    ),
-]
+def unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def json_finding(text: str) -> str:
+    try:
+        pending = [json.loads(text, object_pairs_hook=unique_json_object)]
+    except (ValueError, RecursionError):
+        return "invalid or ambiguous JSON"
+
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            model = value.get("model")
+            if isinstance(model, str) and model.lower() in PRIVATE_MODELS:
+                return "Django account, session or audit record"
+            for key, item in value.items():
+                if item not in (None, "", REDACTED, [], {}):
+                    if re.fullmatch(SENSITIVE_FIELDS, key, re.IGNORECASE) or JSON_EXTRA_FIELDS.fullmatch(key):
+                        return "credential or personal-data field in JSON"
+                pending.extend((key, item))
+        elif isinstance(value, list):
+            pending.extend(value)
+        elif isinstance(value, str):
+            finding = signature_finding(value)
+            if finding:
+                return finding
+    return ""
+
+
+def safety_finding(path: Path, text: str) -> str:
+    suffix = path.suffix.lower()
+    finding = signature_finding(text)
+    if finding:
+        return finding
+    if suffix in JSON_SUFFIXES:
+        return json_finding(text)
+    if suffix in JSON_LINES_SUFFIXES:
+        return next((finding for line in text.splitlines() if line.strip()
+                     and (finding := json_finding(line))), "")
+    if any(match["value"] not in ("", REDACTED) for match in QUOTED_FIELD.finditer(text)):
+        return "literal credential or personal-data field"
+    if COMPLEX_LITERAL.search(text):
+        return "complex literal in sensitive field"
+    if suffix in CONFIG_SUFFIXES:
+        for match in CONFIG_FIELD.finditer(text):
+            if not re.fullmatch(r"""(?:["']\[REDACTED\]["']|["']{2})?[ \t]*(?:[#;].*)?""", match["value"]):
+                return "unverified value in sensitive config field"
+    return ""
 
 
 def is_excluded(path: Path) -> tuple[bool, str]:
     """Return (excluded?, reason)."""
 
     relative = path.relative_to(PROJECT_ROOT)
+    relative_key = relative.as_posix().lower()
+    if relative_key in EXCLUDED_PATHS:
+        return True, EXCLUDED_PATHS[relative_key]
 
-    if any(part in EXCLUDED_DIRS for part in relative.parts[:-1]):
+    if path.is_symlink() or not path.resolve().is_relative_to(PROJECT_ROOT):
+        return True, "symlink or path outside project"
+
+    if relative_key == REPORT_NAME.lower():
+        return True, "reserved generated report name"
+
+    if any(part.lower() in EXCLUDED_DIRS for part in relative.parts[:-1]):
         return True, "excluded directory"
 
-    if path.name in EXCLUDED_FILENAMES:
+    if path.name.lower() in EXCLUDED_FILENAMES:
         return True, "sensitive filename"
 
     # Catch .env.* generically.
-    if path.name == ".env" or path.name.startswith(".env."):
+    if path.name.lower().startswith(".env."):
         return True, "environment file"
 
     suffix = path.suffix.lower()
@@ -285,24 +320,42 @@ def looks_binary(data: bytes) -> bool:
         return True
 
 
-def redact_text(text: str) -> tuple[str, int]:
-    """Apply secret-redaction patterns."""
-    changes = 0
+def redact_text(text: str) -> str:
+    def redact_literal(match: re.Match[str]) -> str:
+        if match["value"] in ("", REDACTED):
+            return match[0]
+        start, end = match.span("value")
+        return match[0][:start - match.start()] + REDACTED + match[0][end - match.start():]
 
-    for pattern, replacement in REDACTION_PATTERNS:
-        text, count = pattern.subn(replacement, text)
-        changes += count
+    text = QUOTED_FIELD.sub(redact_literal, text)
+    text = CREDENTIAL_URL.sub(r"\1", text)
+    text = AUTH_HEADER.sub(r"\1" + REDACTED, text)
+    text = TOKEN.sub(REDACTED, text)
+    return EMAIL.sub(
+        lambda match: match[0] if is_example_email(match) else "redacted@example.invalid",
+        text,
+    )
 
-    return text, changes
+
+def verify_zip(candidate: Path) -> None:
+    with zipfile.ZipFile(candidate) as archive:
+        for entry in archive.infolist():
+            path = Path(entry.filename)
+            # Reading every member also verifies its CRC.
+            if signature_finding(entry.filename) or safety_finding(
+                path, archive.read(entry).decode("utf-8")
+            ):
+                raise SystemExit("Stopped: a ZIP member failed the final safety check. No ZIP published.")
 
 
 def main() -> None:
-    if OUTPUT_ZIP.exists():
-        OUTPUT_ZIP.unlink()
+    # Do not leave an older, potentially unsafe bundle behind if this run fails.
+    OUTPUT_ZIP.unlink(missing_ok=True)
 
     included: list[str] = []
-    excluded: list[tuple[str, str]] = []
-    redacted: list[tuple[str, int]] = []
+    excluded: Counter[str] = Counter()
+    withheld: list[tuple[str, str]] = []
+    redacted: list[str] = []
 
     with tempfile.TemporaryDirectory(prefix="safe-project-bundle-") as temp:
         safe_root = Path(temp) / PROJECT_ROOT.name
@@ -316,46 +369,66 @@ def main() -> None:
                 continue
 
             relative = path.relative_to(PROJECT_ROOT)
+            name = relative.as_posix()
 
             skip, reason = is_excluded(path)
             if skip:
-                excluded.append((str(relative), reason))
+                excluded[reason] += 1
+                continue
+
+            if signature_finding(name):
+                excluded["suspicious filename (not recorded)"] += 1
                 continue
 
             try:
                 raw = path.read_bytes()
-            except (OSError, PermissionError) as exc:
-                excluded.append((str(relative), f"unreadable: {exc}"))
+            except OSError:
+                excluded["unreadable file"] += 1
                 continue
 
             if looks_binary(raw):
-                excluded.append((str(relative), "binary file"))
+                excluded["binary file"] += 1
                 continue
 
             try:
                 text = raw.decode("utf-8")
             except UnicodeDecodeError:
-                excluded.append((str(relative), "non-UTF-8 file"))
+                excluded["non-UTF-8 file"] += 1
                 continue
 
-            sanitized, count = redact_text(text)
+            finding = signature_finding(text)
+            if finding in RESIDUAL_PATTERNS:
+                sanitized = text
+            else:
+                is_json = path.suffix.lower() in JSON_SUFFIXES | JSON_LINES_SUFFIXES
+                sanitized = text if is_json else redact_text(text)
+                finding = safety_finding(relative, sanitized)
+
+            if not finding and sanitized != text and path.suffix.lower() == ".py":
+                try:
+                    ast.parse(sanitized)
+                except SyntaxError:
+                    finding = "Python syntax could not be preserved during redaction"
+
+            if finding:
+                excluded["withheld by safety scan"] += 1
+                withheld.append((name, finding))
+                continue
 
             destination = safe_root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_text(sanitized, encoding="utf-8")
+            destination.write_bytes(sanitized.encode("utf-8"))
 
-            included.append(str(relative))
+            included.append(name)
 
-            if count:
-                redacted.append((str(relative), count))
+            if sanitized != text:
+                redacted.append(name)
 
-        report = safe_root / "SAFE_BUNDLE_REPORT.txt"
+        report = safe_root / REPORT_NAME
 
         report_lines = [
             "SAFE PROJECT BUNDLE REPORT",
             "=" * 70,
-            "",
-            f"Original project directory: {PROJECT_ROOT}",
             "",
             "IMPORTANT:",
             "This bundle was automatically sanitized. Automated detection",
@@ -365,29 +438,23 @@ def main() -> None:
             "",
             f"Files included: {len(included)}",
             f"Files containing automatic redactions: {len(redacted)}",
-            f"Files excluded: {len(excluded)}",
+            f"Files excluded: {sum(excluded.values())}",
             "",
             "FILES WITH REDACTIONS",
             "-" * 70,
         ]
 
-        if redacted:
-            for filename, count in sorted(redacted):
-                report_lines.append(f"{filename}  ({count} replacement(s))")
-        else:
-            report_lines.append("(none detected)")
-
+        report_lines.extend(sorted(redacted) or ["(none detected)"])
         report_lines += [
             "",
-            "EXCLUDED FILES",
+            "EXCLUSION COUNTS BY REASON",
             "-" * 70,
         ]
-
-        if excluded:
-            for filename, reason in sorted(excluded):
-                report_lines.append(f"{filename}  -- {reason}")
-        else:
-            report_lines.append("(none)")
+        report_lines.extend(f"{count}: {reason}" for reason, count in sorted(excluded.items()))
+        report_lines += ["", "EXPLICIT PROJECT EXCLUSIONS (IF PRESENT)", "-" * 70]
+        report_lines.extend(f"{name} -- {reason}" for name, reason in sorted(EXCLUDED_PATHS.items()))
+        report_lines += ["", "FILES WITHHELD BY THE SAFETY SCAN", "-" * 70]
+        report_lines.extend([f"{name} -- {reason}" for name, reason in sorted(withheld)] or ["(none)"])
 
         report_lines += [
             "",
@@ -399,18 +466,14 @@ def main() -> None:
 
         report.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
 
-        with zipfile.ZipFile(
-            OUTPUT_ZIP,
-            "w",
-            compression=zipfile.ZIP_DEFLATED,
-            compresslevel=9,
-        ) as archive:
-            for path in safe_root.rglob("*"):
-                if path.is_file():
-                    archive.write(
-                        path,
-                        arcname=path.relative_to(safe_root.parent),
-                    )
+        with tempfile.TemporaryDirectory(prefix=".safe-bundle-", dir=PROJECT_ROOT) as staging:
+            candidate = Path(staging) / OUTPUT_ZIP.name
+            with zipfile.ZipFile(candidate, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+                for path in sorted(safe_root.rglob("*")):
+                    if path.is_file():
+                        archive.write(path, arcname=path.relative_to(safe_root.parent))
+            verify_zip(candidate)
+            candidate.replace(OUTPUT_ZIP)
 
     print()
     print("Safe project bundle created:")
@@ -418,7 +481,7 @@ def main() -> None:
     print()
     print(f"Included files: {len(included)}")
     print(f"Files redacted: {len(redacted)}")
-    print(f"Excluded files: {len(excluded)}")
+    print(f"Excluded files: {sum(excluded.values())} ({len(withheld)} withheld by the safety scan)")
     print()
     print("Before sharing it:")
     print("  1. Open the ZIP.")
