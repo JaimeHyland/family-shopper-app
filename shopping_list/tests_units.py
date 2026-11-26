@@ -350,6 +350,7 @@ class UnitControlTests(TwoFamilyTestCase):
         for action in actions:
             self.assertEqual(self.action(self.list_item_a, action).status_code, 409)
         self.assertEqual(list(ListItem.objects.order_by('pk').values()), before)
+        self.client.force_login(self.admin_a)
         self.client.post(self.url_a('close_shopping_list'), {
             'shopping_list_id': self.list_item_a.shopping_list_id,
         })
@@ -496,6 +497,7 @@ class UnitBasketTests(TwoFamilyTestCase):
         self.action(bought, 'add_to_basket')
         self.client.post(self.url_a('shopping_list'), {'action': 'buy_basket'})
         old_list = self.list_item_a.shopping_list
+        self.client.force_login(self.admin_a)
         self.client.post(self.url_a('close_shopping_list'), {
             'shopping_list_id': old_list.pk,
             'carry_forward_unpurchased': 'on', 'carry_forward_cancelled': 'on',
@@ -558,6 +560,7 @@ class UnitBasketTests(TwoFamilyTestCase):
 
     def test_stale_purchase_form_cannot_purchase_replacement_list_units(self):
         old_id = self.list_item_a.shopping_list_id
+        self.client.force_login(self.admin_a)
         self.client.post(self.url_a('close_shopping_list'), {
             'shopping_list_id': old_id, 'carry_forward_unpurchased': 'on',
         })
@@ -903,8 +906,8 @@ class UnitConcurrencyTests(TwoFamilyFixtureMixin, TransactionTestCase):
     def test_claim_racing_close_cannot_mutate_carried_forward_unit(self):
         barrier = Barrier(2)
         clients = [Client(), Client()]
-        for client in clients:
-            client.force_login(self.member_a)
+        clients[0].force_login(self.member_a)
+        clients[1].force_login(self.admin_a)
         old_list = self.list_item_a.shopping_list
 
         def operate(index):
