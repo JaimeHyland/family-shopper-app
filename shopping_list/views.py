@@ -13,7 +13,9 @@ from .forms import (
     CategoryForm, MembershipPermissionsForm, ProductForm, ShopForm,
 )
 from .templatetags.custom_filters import member_display_name
-from utilities.utils import is_family_admin, has_family_permission
+from utilities.utils import (
+    can_close_shopping_list, is_family_admin, has_family_permission,
+)
 import logging
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -1808,6 +1810,9 @@ class CloseShoppingListView(FamilyMembershipRequiredMixin, View):
     """
 
     def post(self, request, *args, **kwargs):
+        if not can_close_shopping_list(request):
+            raise PermissionDenied
+
         raw_list_id = request.POST.get('shopping_list_id', '')
         if not raw_list_id.isdigit():
             return HttpResponseBadRequest("Invalid request")

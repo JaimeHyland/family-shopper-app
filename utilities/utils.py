@@ -15,6 +15,11 @@ def is_family_admin(request):
     return membership is not None and membership.is_family_admin
 
 
+def can_close_shopping_list(request):
+    """Closing policy: provisionally restricted to the current family's admins."""
+    return is_family_admin(request)
+
+
 def has_family_permission(request, flag_name):
     """True if `request` carries a family membership and that membership
     is authorised for the operation gated by `flag_name` (one of
